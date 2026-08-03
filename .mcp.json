@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "research-engine": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["C:/Users/pavel/research-engine/mcp_server.py"]
+    }
+  }
+}

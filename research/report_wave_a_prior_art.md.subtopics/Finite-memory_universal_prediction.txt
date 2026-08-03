@@ -1,0 +1,160 @@
+Теперь у меня достаточно данных для полноценного отчёта. Соберу итоговый анализ.
+
+---
+
+**ВЕРДИКТ:** Прямой работы, где для класса древесных источников T_M (деревья с ≤M листьев) одновременно доказана граница сожаления для алгоритма с жёстко ограниченной (не растущей с T) памятью, в найденной литературе **нет**. Однако существуют две ортогональные линии, которые можно试图 «состыковать»: (i) Feder–Merhav–Gutman (1992) + Ziv–Merhav (2007) дают универсальность относительно любого FS-класса (включая T_M), но память алгоритмов растёт с T; (ii) Meron–Feder (2004) дают жёстко ограниченную память, но класс сравнения — либо constant predictors, либо «все K-state рандомизированные машины», без явного выделения T_M. Синтез этих двух линий — открытая задача.
+
+---
+
+## РАЗБОР ПО КАЖДОЙ ЛИНИИ
+
+### 1. Feder–Merhav–Gutman (1992): «Universal Prediction of Individual Sequences»
+
+**DOI:** [10.1109/18.144706](https://doi.org/10.1109/18.144706)  
+**Venue:** IEEE Trans. Information Theory, vol. 38, no. 4, pp. 1258–1270, July 1992.
+
+**(а) Класс сравнения:** Все конечные автоматы (FSM) с S состояниями (любое конечное S). Показана **теорема об эквивалентности**: FS-predictability π(x) = Markov-predictability p(x) = lim_{k→∞} p_k(x). То есть любой FS-предиктор асимптотически не лучше некоторого марковского предиктора достаточно высокого порядка.
+
+**(б) Модель памяти алгоритма:** **Растёт с T.** Предложено два универсальных алгоритма:
+- *Марковский с растущим порядком*: порядок k растёт как O(log t), число состояний ~2^k ~ poly(t). Сегментная схема: на сегменте длины n_k ≥ α_k·2^k применяется k-й порядок, затем порядок увеличивается.
+- *Incremental Parsing (IP) predictor* на базе LZ-парсинга: эффективное число состояний порядка c ~ n/log n (число различных фраз), что эквивалентно марковскому порядку log(n/log n).
+
+**(в) Вид границы:** Individual-sequence (детерминированные последовательности, без вероятностных предположений).
+
+**(г) Формула границы:** Для любого xⁿ,
+\[
+\hat{\pi}(x^n) \le p_k(x^n) + \epsilon(n) \le \pi_S(x^n) + \epsilon^*(n),
+\]
+где ε(n) → 0, ε*(n) → 0 при n → ∞. Конкретно: ε(n) = O(1/√log n) для IP-предиктора. Сходимость к FS-predictability гарантирована асимптотически.
+
+**(д) Связь с T_M:** Класс T_M (древесные источники с ≤M листьев, глубина ≤D) является **подклассом** FS-машин с не более чем M·|X| состояний. Следовательно, FS-predictability π(x) ≤ predictivity относительно T_M. Алгоритм Feder–Merhav–Gutman асимптотически достигает π(x), а значит, и оптимальной predictivity для T_M. **НО:** память алгоритма растёт с T (не жёстко ограничена).
+
+---
+
+### 2. Merhav–Feder (1998): «Universal Prediction»
+
+**DOI:** [10.1109/18.720534](https://doi.org/10.1109/18.720534)  
+**Venue:** IEEE Trans. Information Theory, vol. 44, no. 6, pp. 2124–2147, October 1998.
+
+**(а) Класс сравнения:** Обзор охватывает оба settings: probabilistic (байесовские смеси, MDL) и individual-sequence (FS-предикторы, экспертные алгоритмы).
+
+**(б) Модель памяти:** Обсуждаются различные схемы; в probabilistic setting — память, как правило, не ограничена; в individual-sequence setting — отсылка к Feder–Merhav–Gutman (1992) и алгоритмам с растущей памятью.
+
+**(в)–(г)** Обзорная работа; собственных новых границ finite-memory regret не содержит.
+
+**(д) Связь с T_M:** Обзор фиксирует общую рамку, но не содержит специфических результатов для finite-memory algorithms над древесными классами.
+
+---
+
+### 3. Meron–Feder (2004): «Finite-Memory Universal Prediction of Individual Sequences» — **КЛЮЧЕВАЯ РАБОТА**
+
+**DOI:** [10.1109/TIT.2004.830749](https://doi.org/10.1109/TIT.2004.830749)  
+**Venue:** IEEE Trans. Information Theory, vol. 50, no. 7, pp. 1506–1523, July 2004.
+
+**(а) Класс сравнения:** 
+- Для *детерминированных* K-state машин — класс **constant predictors** (одно состояние, т.е. предсказание фиксированным битом).  
+- Для *рандомизированных* K-state машин — более широкий класс, включающий все K-state рандомизированные FS-предикторы (включая марковские).  
+
+**(б) Модель памяти алгоритма:** **Жёстко ограничена константой K.** Число состояний не зависит от T. Рассматриваются конкретные архитектуры:
+- *Exponentially Decaying Memory (EDM)* — экспоненциально взвешенные счётчики;
+- *Saturated Counter (SC)* — насыщающийся счётчик;
+- *Imaginary Sliding Window (ISW)* — воображаемое скользящее окно.
+
+**(в) Вид границы:** Individual-sequence (наихудший случай по всем последовательностям).
+
+**(г) Формулы границ:**
+- *Детерминированные K-state машины:* Оптимальный асимптотический regret = **1/(2K)**. Достигается EDM-машиной. Нижняя граница: никакая детерминированная K-state машина не может иметь regret меньше 1/(2K).
+- *Рандомизированные K-state машины:* Regret масштабируется как **Θ(1/√K)**. Точнее: достижим regret O(1/√K), и нижняя граница Ω(1/√K).
+
+**(д) Связь с T_M:**
+Класс T_M (древесные источники с ≤M листьев) может быть реализован как FS-машина с числом состояний порядка O(M·|X|). Если взять рандомизированную схему Meron–Feder с K = O(M) состояниями, то regret порядка O(1/√M) *относительно класса всех K-state рандомизированных машин*, а значит, и относительно T_M. **Однако:**
+- В статье Meron–Feder это явно не формулируется для древесных источников.
+- Для детерминированных машин класс сравнения — лишь constant predictors, что гораздо ýже T_M.
+- Прямого результата вида «алгоритм с O(M) памятью имеет regret O(1/√M) относительно лучшего предсказателя в T_M» в литературе нет; это потребовало бы синтеза техники Meron–Feder (finite memory) с техникой Feder–Merhav–Gutman (сведение FS к деревьям/Маркову).
+
+---
+
+### 4. Meron–Feder (2004, DCC): «Optimal Finite State Universal Coding of Individual Sequences»
+
+**DOI:** [10.1109/DCC.2004.1281478](https://doi.org/10.1109/DCC.2004.1281478)  
+**Venue:** Data Compression Conference, 2004.
+
+**(а) Класс сравнения:** Все K-state машины, assigning probability distributions (log-loss / self-information loss). Задача: универсальное *кодирование* = присвоение вероятностей.
+
+**(б) Память:** Жёстко ограничена K состояниями.
+
+**(в)–(г)** Аналог результатов Meron–Feder (2004) для кодирования: нижняя граница на achievable regret ~ Ω(K^{-2/3}) для любой K-state машины; достижима Enhanced Exponential Decaying Memory (EEDM) машиной.
+
+**(д) Связь с T_M:** Та же ситуация — результат применим к древесным источникам опосредованно, но без явной формулировки.
+
+---
+
+### 5. Ziv–Merhav (2007): «On Context-Tree Prediction of Individual Sequences»
+
+**DOI:** [10.1109/TIT.2007.894647](https://doi.org/10.1109/TIT.2007.894647)  
+**Venue:** IEEE Trans. Information Theory, vol. 53, no. 6, pp. 2195–2200, June 2007.
+
+**(а) Класс сравнения:** Контекстно-древесные предикторы (context-tree predictors), напрямую соответствующие классу T_M.
+
+**(б) Модель памяти:** **Растёт.** Алгоритм строит контекстное дерево; число состояний растёт с длиной последовательности (хотя медленнее, чем полное дерево).
+
+**(в)–(г)** Individual-sequence. Показано, что контекстно-древесный предиктор достигает производительности лучшего предиктора в классе контекстных деревьев с regret, стремящимся к нулю.
+
+**(д) Связь с T_M:** Это **прямая** работа по T_M! Но память не жёстко ограничена — алгоритм достраивает дерево по мере наблюдения данных.
+
+---
+
+### 6. Berg–Ordentlich–Shayevitz (2023): «Statistical Inference with Limited Memory: A Survey»
+
+**arXiv:** [2312.15225](https://arxiv.org/abs/2312.15225)
+
+Свежий обзор. Подтверждает, что:
+- Meron–Feder (2004) — «surprising result»: в adversarial setting для предсказания memory не требует больше ресурсов, чем в stochastic setting.
+- Обзор классифицирует finite-memory задачи (hypothesis testing, bias estimation, uniformity testing, entropy estimation, prediction), но не содержит новых результатов по синтезу finite-memory prediction + древесные классы.
+- Отмечает открытость многих вопросов в finite-memory inference.
+
+---
+
+## ОТВЕТ НА КЛЮЧЕВОЙ ВОПРОС
+
+> Есть ли работа, где для класса, содержащего древесные источники с ограниченным числом состояний/листьев, доказана граница сожаления для алгоритма, чья память жёстко ограничена и не растёт с T?
+
+**Такой работы в явном виде нет.** Две линии исследований существуют параллельно:
+
+| Линия | Память алгоритма | Класс сравнения | Ключевые работы |
+|-------|------------------|-----------------|-----------------|
+| Универсальное предсказание без ограничений памяти | Растёт с T | Любой FS / Markov / Context-tree | Feder–Merhav–Gutman (1992), Ziv–Merhav (2007) |
+| Finite-memory предсказание | Жёстко ограничена (K) | Constant predictors или K-state randomized FS | Meron–Feder (2004), Dar–Feder (2014) |
+
+**Можно ли переложить границу напрямую?** Технически да, но с оговорками:
+
+- Класс T_M (деревья с ≤M листьев) реализуется детерминированной FS-машиной с ~M·|X| состояниями.
+- Результат Meron–Feder (2004) для *рандомизированных* K-state машин даёт regret O(1/√K) относительно *всех* K-state рандомизированных машин. При K = O(M) это даёт regret O(1/√M) относительно T_M.
+- **Однако** это требует рандомизации (детерминированные машины дают лишь 1/(2K) относительно constant predictors, что слишком слабо).
+- Более тонкий момент: Meron–Feder рассматривают time-invariant FSM; древесный источник естественно представляется как time-invariant FSM с числом состояний, равным числу листьев. Так что вложение T_M в класс K-state машин корректно.
+
+**Принципиально иная техника?** Возможно, потребуется. Техника Meron–Feder основана на EDM/ISW/SC — простых счётчиковых схемах. Для древесных источников может потребоваться иерархическая организация памяти (что-то вроде finite-memory CTW), и это не тривиально. Построение finite-memory аналога CTW с жёстким ограничением числа состояний, доказуемо оптимального для T_M — открытая задача.
+
+---
+
+## СПИСОК ИСТОЧНИКОВ
+
+1. Feder, M., Merhav, N., Gutman, M. «Universal Prediction of Individual Sequences.» *IEEE Trans. Information Theory*, vol. 38, no. 4, pp. 1258–1270, 1992. DOI: [10.1109/18.144706](https://doi.org/10.1109/18.144706).
+
+2. Merhav, N., Feder, M. «Universal Prediction.» *IEEE Trans. Information Theory*, vol. 44, no. 6, pp. 2124–2147, 1998. DOI: [10.1109/18.720534](https://doi.org/10.1109/18.720534).
+
+3. Meron, E., Feder, M. «Finite-Memory Universal Prediction of Individual Sequences.» *IEEE Trans. Information Theory*, vol. 50, no. 7, pp. 1506–1523, 2004. DOI: [10.1109/TIT.2004.830749](https://doi.org/10.1109/TIT.2004.830749).
+
+4. Meron, E., Feder, M. «Optimal Finite State Universal Coding of Individual Sequences.» *Proc. Data Compression Conference (DCC)*, 2004. DOI: [10.1109/DCC.2004.1281478](https://doi.org/10.1109/DCC.2004.1281478).
+
+5. Dar, R., Feder, M. «Finite-Memory Prediction as Well as the Empirical Mean.» *IEEE Trans. Information Theory*, vol. 60, no. 8, pp. 4786–4799, 2014. DOI: [10.1109/TIT.2014.2325819](https://doi.org/10.1109/TIT.2014.2325819).
+
+6. Dar, R., Feder, M. «Finite-Memory Universal Prediction of Individual Continuous Sequences.» *IEEE Trans. Information Theory*, vol. 57, no. 10, pp. 6766–6774, 2011. DOI: [10.1109/ISIT.2011.6033961](https://doi.org/10.1109/ISIT.2011.6033961).
+
+7. Ziv, J., Merhav, N. «On Context-Tree Prediction of Individual Sequences.» *IEEE Trans. Information Theory*, vol. 53, no. 6, pp. 2195–2200, 2007. DOI: [10.1109/TIT.2007.894647](https://doi.org/10.1109/TIT.2007.894647).
+
+8. Berg, T., Ordentlich, O., Shayevitz, O. «Statistical Inference with Limited Memory: A Survey.» *arXiv:2312.15225*, 2023 (v3: Nov 2024). URL: [https://arxiv.org/abs/2312.15225](https://arxiv.org/abs/2312.15225).
+
+9. Fiala, E.R., Greene, D.H. «Data Compression with Finite Windows.» *Communications of the ACM*, vol. 32, no. 4, pp. 490–505, 1989. DOI: [10.1145/63334.63341](https://doi.org/10.1145/63334.63341). (Конечное окно в LZ-компрессии.)
+
+10. Ron, D., Singer, Y., Tishby, N. «The Power of Amnesia: Learning Probabilistic Automata with Variable Memory Length.» *Machine Learning*, vol. 25, pp. 117–149, 1996. DOI: [10.1007/BF00114008](https://doi.org/10.1007/BF00114008). (Класс probabilistic automata ≈ древесные источники.)

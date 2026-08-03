@@ -1,0 +1,10 @@
+<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="search_brave">
+<｜｜DSML｜｜parameter name="query" string="true">prediction suffix tree "bounded memory" OR "fixed budget" online learning adversarial regret leaves</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="count" string="false">8</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+<｜｜DSML｜｜invoke name="search_openalex">
+<｜｜DSML｜｜parameter name="query" string="true">budget PST prediction suffix tree online regret bound constant space leaves</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="per_page" string="false">8</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>

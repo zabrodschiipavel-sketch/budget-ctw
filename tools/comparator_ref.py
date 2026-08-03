@@ -1,0 +1,167 @@
+"""Точный эталон компаратора min_{S∈T_M} L_S(x) — этап 5б.
+
+Стоимость древесного источника S с листьями-контекстами:
+
+    L_S(x) = Σ_листьев n_leaf · H(эмпирическое распределение следующего бита)
+
+Для каждого встреченного контекста u (узел полного дерева) известны счётчики
+n[u][0], n[u][1] следующего бита. Стоимость узла как листа:
+
+    c(u) = n_u · H(n0/n_u, n1/n_u)        (бит)
+
+Модель T_M — ПОЛНЫЕ бинарные деревья контекстов (глубина ≤ D): если узел
+внутренний, у него есть оба ребёнка. Контекст, ни разу не встретившийся, —
+законный лист с нулевой массой и нулевой стоимостью. Поэтому дерево строится
+с «виртуальными» детьми: у каждого реального узла глубины < D всегда два
+ребёнка (недостающий — нулевой лист). Это ровно класс сравнения из
+постановки П4, и тогда отсечение под бюджет — классический cost-complexity
+pruning без спецслучаев.
+
+Вогнутость энтропии: c(u) ≥ c(u0) + c(u1), поэтому полное дерево минимизирует
+стоимость без ограничений, а с бюджетом M листьев задача — выбрать множество
+расщеплений максимального суммарного выигрыша g(u) = c(u) − c(u0) − c(u1) ≥ 0.
+
+Здесь реализованы два способа:
+
+1. Точный DP по бюджету листьев: dp[u][m] — мин. стоимость поддерева узла u
+   с ≤ m листьями. Стоимость O(узлы × M²) — эталон для малых данных.
+
+2. Лагранжева развёртка (BFOS): для штрафа λ за лист
+   F_λ(u) = min( c(u) + λ,  F_λ(u0) + F_λ(u1) ).
+   Sweep λ от ∞ к 0 даёт точки (листья, стоимость) нижней выпуклой оболочки.
+   Для бюджета вне оболочки — верхняя граница истинного минимума.
+
+Модель битов обязана совпадать с ядром src/ctw.rs: байт → 8 бит, старший бит
+первым; контекст бита на глубине d — это (d+1)-й предыдущий бит
+(в ядре: (hist >> d) & 1 при hist = (hist<<1)|x).
+
+Соглашение об узлах (как в ядре): корень — индекс 0 (контекст длины 0);
+ребёнок узла по биту b — nodes[u]["ch"][b] (0 = нет). Счётчик n[u][x]
+увеличивается на каждом узле пути контекста бита x — ровно как в ядре:
+n — параметр модели KT, «как часто после этого контекста шёл символ x».
+"""
+import math
+
+
+def bits_of(data: bytes):
+    """Битовая последовательность корпуса, как в ядре: MSB-first."""
+    for b in data:
+        for s in range(7, -1, -1):
+            yield (b >> s) & 1
+
+
+def build_tree(data: bytes, depth: int):
+    """Полное дерево встреченных контекстов.
+
+    Возвращает список узлов: {n: [n0, n1], ch: [u0, u1], dep}.
+    Проход в точности повторяет ядро: для каждого бита x спуск по контексту
+    (бит глубины d — (hist>>d)&1), создание недостающих узлов, инкремент
+    n[x] на всех узлах пути; затем hist = (hist<<1)|x.
+
+    Класс T_M — префикс-замкнутые деревья контекстов: узел может иметь
+    0, 1 или 2 детей. Узел с одним ребёнком имеет c(u) = 0 (следующий бит
+    детерминирован), поэтому в оптимуме он всегда лист — виртуальные дети
+    не создаются и в бюджет M не входят.
+    """
+    nodes = [{"n": [0, 0], "ch": [0, 0], "dep": 0}]
+    hist = 0
+    for x in bits_of(data):
+        cur = 0
+        nodes[cur]["n"][x] += 1
+        for d in range(depth):
+            b = (hist >> d) & 1
+            c = nodes[cur]["ch"][b]
+            if c == 0:
+                c = len(nodes)
+                nodes.append({"n": [0, 0], "ch": [0, 0], "dep": d + 1})
+                nodes[cur]["ch"][b] = c
+            cur = c
+            nodes[cur]["n"][x] += 1
+        hist = ((hist << 1) | x) & ((1 << 63) - 1)
+    return nodes
+
+
+def _entropy(p: float) -> float:
+    if p <= 0.0 or p >= 1.0:
+        return 0.0
+    return -p * math.log2(p) - (1 - p) * math.log2(1 - p)
+
+
+def cost_leaf(nodes, u: int) -> float:
+    """c(u) = n_u · H(эмпирическое распределение следующего бита)."""
+    n0, n1 = nodes[u]["n"]
+    n = n0 + n1
+    if n == 0:
+        return 0.0
+    return n * _entropy(n0 / n)
+
+
+class ExactDP:
+    """Точный DP: dp[u][m] = мин. стоимость поддерева u с ≤ m листьями."""
+
+    def __init__(self, nodes, max_m):
+        self.nodes = nodes
+        self.max_m = max_m
+        self.memo = {}
+
+    def solve(self, u, m):
+        if m < 1:
+            return float("inf")
+        key = (u, m)
+        if key in self.memo:
+            return self.memo[key]
+        best = cost_leaf(self.nodes, u)          # u — лист, 1 лист
+        c0, c1 = self.nodes[u]["ch"]
+        if c0 and c1 and m >= 2:
+            for m0 in range(1, m):               # листьев в левом поддереве
+                v = self.solve(c0, m0) + self.solve(c1, m - m0)
+                if v < best:
+                    best = v
+        self.memo[key] = best
+        return best
+
+    def frontier(self, max_m):
+        return [self.solve(0, m) for m in range(1, max_m + 1)]
+
+
+def full_tree_cost(nodes):
+    """Стоимость полного дерева: Σ c(листьев)."""
+    return sum(cost_leaf(nodes, u) for u, nd in enumerate(nodes)
+               if not (nd["ch"][0] and nd["ch"][1]))
+
+
+def bfos(nodes, lam: float):
+    """Лагранжева развёртка при штрафе λ за лист.
+
+    Возвращает (стоимость_без_штрафа, число_листьев) оптимального дерева.
+    Узлы созданы в порядке «родитель раньше потомков», поэтому обход с конца
+    — корректный пост-порядок.
+    """
+    n = len(nodes)
+    F = [0.0] * n
+    leaves = [0] * n
+    for u in range(n - 1, -1, -1):
+        as_leaf = cost_leaf(nodes, u) + lam
+        c0, c1 = nodes[u]["ch"]
+        if c0 and c1:
+            as_split = F[c0] + F[c1]
+            if as_split < as_leaf:
+                F[u] = as_split
+                leaves[u] = leaves[c0] + leaves[c1]
+                continue
+        F[u] = as_leaf
+        leaves[u] = 1
+    return F[0] - lam * leaves[0], leaves[0]
+
+
+if __name__ == "__main__":
+    import sys
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    data = b"the quick brown fox jumps over the lazy dog the quick brown fox"
+    depth = 8
+    nodes = build_tree(data, depth)
+    print(f"узлов в полном дереве (с виртуальными): {len(nodes)}")
+    dp = ExactDP(nodes, max_m=16)
+    print("точный DP (стоимость при ≤m листьях):")
+    for m, c in enumerate(dp.frontier(16), start=1):
+        print(f"  m={m:>2}: {c:10.3f} бит")

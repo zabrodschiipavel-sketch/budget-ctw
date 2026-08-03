@@ -1,0 +1,193 @@
+Теперь у меня достаточно данных для полного разбора. Составляю итоговый анализ.
+
+---
+
+## ВЕРДИКТ
+
+**Нижние границы памяти для adversarial experts дают частичную, но не прямую применимость к CTW. В stochastic setting (основной для CTW) картина иная: при o(T) памяти неизбежный линейный штраф НЕ выводится напрямую из известных adversarial lower bounds. Однако при adversarial генерации последовательности и памяти o(числа экспертов) ≈ o(2^D) regret становится Ω(T) или полиномиально хуже оптимального. Ключевой результат Peng–Zhang (2022): против адаптивного противника любой сублинейный regret требует Ω(n) памяти — это напрямую бьёт по CTW в adversarial режиме.**
+
+---
+
+## Разбор по работам
+
+### 1. Srinivas–Woodruff–Xu–Zhou (STOC 2022) — "Memory Bounds for the Experts Problem"
+
+**arXiv:** 2204.09837 | **Источник найден через:** OpenAlex / Brave
+
+**(а) Постановка:** Adversarial (oblivious adversary). Потоковое поступление экспертов (streaming): n экспертов, T дней. Алгоритм видит предсказания экспертов и выбирает действие; затем видит потери.
+
+**(б) Что ограничено:** Биты памяти (space complexity). Алгоритм может хранить не всех экспертов. Параметр: память размера n^δ для δ ∈ (0,1).
+
+**(в) Нижняя граница regret:**
+- Любой алгоритм с regret ≤ T^(1−ε) требует Ω(n) памяти.
+- При памяти n^δ: regret = Ω(T^(1/(1+δ))).
+- Верхняя граница: алгоритм с памятью n^δ достигает regret Õ(nT^(2/(2+δ))).
+
+**(г) Переносимость на CTW:** CTW имеет n экспертов ≈ exp(Θ(2^D)) для деревьев глубины D (число топологий context tree). Память классического CTW = O(2^D) = O(log n) узлов со счётчиками. Это экспоненциально меньше n. По нижней границе: при n^δ памяти, δ = log_2(2^D) / log_2(exp(2^D)) ≈ D / 2^D → 0 (почти 0). Тогда regret = Ω(T^(1/(1+0))) = Ω(T) — **линейный**. Это означает: в adversarial setting CTW с o(n) памятью обречён на линейный regret.
+
+**(д) Линейный штраф при o(T) памяти:** Да, прямо выводится: при памяти n^δ с δ → 0 (как у CTW), нижняя граница даёт regret = Ω(T). При памяти o(T) (где T может быть порядка n или больше) — линейный штраф неизбежен против oblivious adversary.
+
+---
+
+### 2. Peng–Zhang (2022, SODA 2023) — "Online Prediction in Sub-linear Space"
+
+**arXiv:** 2207.07974 | **Источник:** OpenAlex
+
+**(а) Постановка:** Adversarial (oblivious и adaptive). Первая работа с сублинейной памятью И сублинейным regret против oblivious adversary.
+
+**(б) Что ограничено:** Биты памяти / число хранимых экспертов.
+
+**(в) Нижняя граница regret:**
+- Против **oblivious adversary**: предложен первый алгоритм с o(n) памятью и o(T) regret (конкретные формулы в [PZ23] = Peng–Zhang 2023, SODA).
+- Против **(strong) adaptive adversary**: **линейная нижняя граница памяти**: любой алгоритм с o(n) памятью обязан иметь Ω(T) regret. То есть невозможно одновременно иметь сублинейную память и сублинейный regret против адаптивного противника.
+
+**(г) Переносимость на CTW:** Принципиально важный результат! CTW как байесовская смесь — это по своей природе алгоритм для **stochastic** источников. Но если рассматривать adversarial setting, то:
+- Против oblivious adversary: можно надеяться на сублинейный regret с o(n) памятью (Peng–Zhang показали, что это возможно).
+- Против adaptive adversary: **невозможно**. Любая реализация CTW с o(n) памятью (а CTW всегда имеет o(n) память, т.к. n экспоненциально) будет иметь линейный regret против адаптивного противника.
+
+**(д) Линейный штраф:** Против адаптивного противника — да, линейный штраф при o(n) памяти доказан напрямую.
+
+---
+
+### 3. Peng–Rubinstein (FOCS 2023) — "Near Optimal Memory-Regret Tradeoff for Online Learning"
+
+**arXiv:** 2303.01673 | **Источник:** OpenAlex / Brave
+
+**(а) Постановка:** Adversarial (oblivious adversary), streaming experts.
+
+**(б) Что ограничено:** Память (число состояний/битов).
+
+**(в) Нижняя граница regret:**
+- При памяти n^δ: regret = Ω(T^(1/(1+δ))) (нижняя граница) и Õ(T^(1/(1+δ))) (верхняя граница) — **почти точный tradeoff**.
+- Ключевой частный случай: √n памяти необходимо и достаточно для o(T) regret.
+- При константной памяти (не зависящей от n): regret = Ω(n^(1/3)T^(2/3)).
+
+**(г) Переносимость на CTW:** Для CTW n ≈ exp(Θ(2^D)). Тогда:
+- √n памяти = exp(Θ(2^D)/2) — астрономически много, CTW так не может.
+- Константная память даёт regret = Ω(exp(2^D/3)T^(2/3)) — больше линейного по T при больших D.
+
+**(д) Линейный штраф:** Если память o(n^δ) для любого фиксированного δ>0, то regret = Ω(T). Для CTW память O(2^D) = o(n^δ) для любого δ>0, значит regret линейный в adversarial setting.
+
+---
+
+### 4. Aamand–Chen–Nguyên–Silwal (2023) — "Improved Space Bounds for Learning with Experts"
+
+**arXiv:** 2303.01453
+
+**(а) Постановка:** Adversarial (oblivious).
+
+**(б) Ограничено:** число бит памяти (space budget n^δ).
+
+**(в) Нижняя граница:** Улучшение алгоритмической стороны: regret Õ(n²T^(1/(1+δ))) (это верхняя граница — алгоритм). Нижняя остаётся Ω(T^(1/(1+δ))) из [PZ23].
+
+**(г) Переносимость на CTW:** Аналогично работе 3 — подтверждает tradeoff, применимый и к CTW в adversarial setting.
+
+---
+
+### 5. Woodruff–Zhang–Zhou (2023) — "Streaming Algorithms for Learning with Experts: Deterministic Versus Robust"
+
+**arXiv:** 2303.01709
+
+**(а) Постановка:** Adversarial (oblivious и adaptive), streaming.
+
+**(б) Ограничено:** Память. Изучается различие между детерминированными и робастными (рандомизированными) алгоритмами в streaming-постановке.
+
+**(в) Результаты:** Разделение между детерминированными и рандомизированными streaming алгоритмами. Детерминированные требуют экспоненциально больше памяти для того же regret.
+
+**(г) Переносимость на CTW:** CTW — детерминированный (при фиксированных гиперпараметрах). Это означает, что в streaming-постановке CTW особенно уязвим к memory lower bounds.
+
+---
+
+### 6. Streaming Multi-Armed Bandits: Maiti et al. (NeurIPS 2021) / Agarwal et al. (COLT 2022) / Chen Wang (ICML 2023)
+
+**(а) Постановка:** Stochastic MAB со streaming-поступлением рук (arms). Single-pass: K рук проходят в потоке; можно хранить ≤ m < K рук.
+
+**(б) Ограничено:** Число хранимых рук (arm memory) m = o(K).
+
+**(в) Нижняя граница regret:**
+- Маити и др. (NeurIPS 2021), Agarwal и др. (COLT 2022): Ω(T^(2/3)) для любого алгоритма с o(K) памятью.
+- Chen Wang (ICML 2023): точная характеризация — Θ̃(K^(1/3)T^(2/3)) regret в single-pass с o(K) памятью.
+- Chen, Wang, Zhang (2023): общая нижняя граница Ω((TB)^α K^(1−α)) для B-pass streaming, α = 2^B/(2^(B+1)−1).
+
+**(г) Переносимость на CTW:** Частичная. MAB — это упрощённая версия experts (одно действие = один эксперт). Но иерархическая структура CTW (деревья-модели) богаче, чем простые MAB. В stochastic setting эти lower bounds не дают прямого линейного штрафа для CTW — дают Ω(T^(2/3)) при o(K) памяти, что сублинейно.
+
+**(д) Линейный штраф:** НЕТ. В stochastic MAB с o(K) памятью, regret Ω(T^(2/3)) — не линейный, а сублинейный.
+
+---
+
+### 7. Chen–Wang–Zhang (2023) — "Tight Memory-Regret Lower Bounds for Streaming Bandits"
+
+**arXiv:** 2306.07903
+
+**(а) Постановка:** Stochastic streaming bandits (B-pass).
+
+**(б) Ограничено:** Память для хранения рук.
+
+**(в) Нижняя граница:** Ω((TB)^α K^(1−α)) для B-pass; при B=1 (single-pass): Ω(K^(1/3)T^(2/3)).
+
+**(г) Переносимость на CTW:** В stochastic setting это означает, что при o(K) памяти regret не менее Ω(T^(2/3)). Но CTW работает в stochastic setting и имеет K = exp(2^D) экспертов при памяти O(2^D) = o(K). Значит, в stochastic setting CTW мог бы иметь regret не хуже Ω̃(T^(2/3)) — не линейный! Однако CTW достигает значительно лучшего (логарифмического) regret за счёт структуры моделей.
+
+---
+
+### 8. He–Ye–Zhang (2024) — "Understanding Memory-Regret Trade-Off for Streaming Stochastic Multi-Armed Bandits"
+
+**arXiv:** 2405.19752
+
+**(а) Постановка:** Stochastic MAB, P-pass streaming.
+
+**(б) Ограничено:** Память m < n.
+
+**(в) Полная характеризация оптимального regret в терминах m, n, P. Алгоритм с regret Õ((n−m)^(1+...) n^(...) T^(...)) и matching lower bound.
+
+**(г) Переносимость на CTW:** Подтверждает общую картину для stochastic setting.
+
+---
+
+## Сводная таблица
+
+| Работа | Setting | Ограничение | Нижняя граница regret | → Линейный при o(T)? |
+|--------|---------|-------------|----------------------|---------------------|
+| **Srinivas et al. (STOC'22)** | Adversarial (obl.) | n^δ памяти | Ω(T^(1/(1+δ))) | **Да**, при δ→0 |
+| **Peng–Zhang (SODA'23)** | Oblivious + Adaptive | o(n) памяти | Adaptive: Ω(T) при o(n) | **Да** (adversarial adaptive) |
+| **Peng–Rubinstein (FOCS'23)** | Adversarial (obl.) | n^δ памяти | Ω(T^(1/(1+δ))) | **Да**, при δ→0 |
+| **Aamand et al. (2023)** | Adversarial (obl.) | n^δ памяти | Ω(T^(1/(1+δ))) | **Да**, при δ→0 |
+| **Maiti et al. (NeurIPS'21)** | Stochastic MAB | o(K) arm memory | Ω(T^(2/3)) | **Нет** (сублинейный) |
+| **Chen Wang (ICML'23)** | Stochastic MAB | o(K) arm memory | Θ̃(K^(1/3)T^(2/3)) | **Нет** |
+| **Chen–Wang–Zhang (2023)** | Stochastic MAB | B-pass, ограниченная | Ω((TB)^αK^(1−α)) | **Нет** |
+
+---
+
+## Применимость к CTW: интегральный анализ
+
+**CTW как байесовская смесь по экспоненциально многим деревьям-экспертам:**
+
+- Число экспертов (model trees) n = число топологий context tree ≤ (D+1)^(|A|-1) для алфавита A, или ~ exp(Θ(2^D)) для полного бинарного дерева.
+- Память CTW: O(|A|^D) узлов со счётчиками — экспоненциально по D, но **дважды экспоненциально меньше** числа экспертов n.
+
+**Вывод по пункту (д):**
+
+1. **Adversarial setting (oblivious):** Нижние границы Srinivas et al. / Peng–Rubinstein дают: если память = n^δ с δ → 0 (как у CTW), то regret = Ω(T). **Линейный штраф неизбежен.**
+
+2. **Adversarial setting (adaptive):** Результат Peng–Zhang: любой алгоритм с o(n) памятью имеет Ω(T) regret. CTW имеет память o(n). **Линейный штраф доказан строго.**
+
+3. **Stochastic setting:** Нижние границы для MAB (Maiti, Agarwal, Wang) дают Ω(T^(2/3)) — **не линейный**. Однако это границы для неструктурированных MAB; CTW использует специфическую структуру (иерархию моделей), что позволяет ему достигать O(log T) regret в stochastic setting. Для stochastic setting с ограниченной памятью напрямую применимые lower bounds отсутствуют — это открытая область.
+
+4. **Ключевой нюанс:** CTW в классическом анализе (Willems et al. 1995) даёт regret O(log T) для stochastic источников с **полной памятью** O(|A|^D). Если ограничить память до o(|A|^D) (например, обрезать дерево), то regret CTW начнёт страдать. Но конкретные tradeoff-ы для CTW с ограниченной памятью в литературе не исследованы — это потенциально открытая проблема.
+
+**Финальный вердикт:** Из adversarial lower bounds (Srinivas et al., Peng–Zhang, Peng–Rubinstein) можно вывести линейный штраф для CTW при памяти o(T) в adversarial setting. Для stochastic setting — нет прямого переноса; необходимы отдельные исследования memory-regret tradeoffs для CTW.
+
+---
+
+## Список источников
+
+1. **Vaidehi Srinivas, David P. Woodruff, Ziyu Xu, Samson Zhou.** "Memory Bounds for the Experts Problem." STOC 2022, pp. 1158–1171. arXiv:2204.09837.
+2. **Binghui Peng, Fred Zhang.** "Online Prediction in Sub-linear Space." SODA 2023. arXiv:2207.07974.
+3. **Binghui Peng, Aviad Rubinstein.** "Near Optimal Memory-Regret Tradeoff for Online Learning." FOCS 2023. arXiv:2303.01673.
+4. **Anders Aamand, Justin Y. Chen, Huy L. Nguyên, Sandeep Silwal.** "Improved Space Bounds for Learning with Experts." 2023. arXiv:2303.01453.
+5. **David P. Woodruff, Fred Zhang, Samson Zhou.** "Streaming Algorithms for Learning with Experts: Deterministic Versus Robust." 2023. arXiv:2303.01709.
+6. **Arpan Maiti, Arnab Bhattacharyya, Palash Dey.** "Multi-Armed Bandits with Bounded Arm-Memory: Near-Optimal Guarantees for Best-Arm Identification and Regret Minimization." NeurIPS 2021.
+7. **Arpit Agarwal, Sanjeev Khanna, Prathamesh Patil.** "A Sharp Memory-Regret Trade-off for Multi-pass Streaming Bandits." COLT 2022.
+8. **Chen Wang.** "Tight Regret Bounds for Single-pass Streaming Multi-armed Bandits." ICML 2023. arXiv:2306.02208.
+9. **Chen Wang, Fred Zhang, Samson Zhou.** "Tight Memory-Regret Lower Bounds for Streaming Bandits." 2023. arXiv:2306.07903.
+10. **Yuchen He, Zichun Ye, Chihao Zhang.** "Understanding Memory-Regret Trade-Off for Streaming Stochastic Multi-Armed Bandits." 2024. arXiv:2405.19752.
+11. **F.M.J. Willems, Y.M. Shtarkov, T.J. Tjalkens.** "The Context-Tree Weighting Method: Basic Properties." IEEE Trans. Info. Theory, 1995. (CTW — базовая работа для контекста.)

@@ -1,0 +1,11 @@
+# Кэши Python
+__pycache__/
+*.pyc
+
+# Временные файлы внешней сортировки (tools/sa_prod.py)
+.sa_tmp/
+*.npy
+*.npy.pref
+
+# Черновые корпуса проверочных обвязок
+tools/_*.bin

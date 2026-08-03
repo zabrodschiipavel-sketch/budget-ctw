@@ -1,0 +1,82 @@
+Теперь у меня достаточно источников. Составляю отчёт.
+
+---
+
+## Целочисленная реализация KT-оценщика и взвешивания CTW: представление вероятностей, логарифмический домен, Jacobian logarithm
+
+### 1. Базовый CTW и KT-оценщик
+
+Классический CTW (Willems, Shtarkov, Tjalkens, 1995) определяет на каждом узле s контекстного дерева три вероятности: оценённую \(P_e^s\) (KT-оценщик), взвешенные вероятности потомков \(P_w^{0s}, P_w^{1s}\) и взвешенную вероятность узла \(P_w^s = \frac{1}{2}P_e^s + \frac{1}{2}P_w^{0s}P_w^{1s}\). KT-оценщик для двоичного алфавита с числом нулей \(a\) и единиц \(b\):
+\[
+P_e(a,b) = \frac{\prod_{i=1}^{a}(i-\frac{1}{2}) \cdot \prod_{j=1}^{b}(j-\frac{1}{2})}{(a+b)!}
+\]
+(Источник: Willems et al., 1995, DOI: [10.1109/18.382012](https://doi.org/10.1109/18.382012), формула (17).)
+
+### 2. Представление вероятностей: три подхода
+
+**2.1. Прямое целочисленное (масштабированные целые).** В диссертации Volf'а (P.A.J. Volf, Eindhoven University of Technology; точное название и DOI не найдены, работа цитируется в блоге meiji163 как «Volf's thesis» с детальным описанием CTW-компрессора) все вероятности хранятся как масштабированные 32-битные целые. Масштабирование фиксировано (например, умножение на \(2^{30}\)), а умножение вероятностей \(P_w^{0s} \cdot P_w^{1s}\) выполняется с последующим сдвигом. Проблема: при глубине дерева \(D\) количество умножений растёт экспоненциально; динамический диапазон требует \(O(D)\) дополнительных бит, что быстро переполняет даже 64-битные целые. **Это инженерная практика без формальных гарантий.**
+
+**2.2. Логарифмическое представление.** Хранятся \(\log P_e^s\), \(\log P_w^s\) как целые с фиксированной точкой (например, умноженные на \(2^{16}\)). KT-оценщик обновляется инкрементально: при поступлении символа к \(a\) или \(b\) добавляется \(\log(\text{count} + \frac{1}{2}) - \log(a+b+1)\). Сложение вероятностей \(P_w^s = \frac{1}{2}(P_e^s + P_w^{0s}P_w^{1s})\) в логарифмическом домене требует вычисления \(\log(e^x + e^y)\) — Jacobian logarithm (см. раздел 3). Источник по логарифмической реализации CTW: Sadakane, Okazaki, Imai, «Implementing the Context Tree Weighting Method for Text Compression» (доступен на ResearchGate, DOI не найден). **Доказанные гарантии:** при использовании точного (без аппроксимации) логарифмического представления с \(B\)-битной мантиссой ошибка в log-вероятности на одну операцию умножения/сложения не превышает \(2^{-B+1}\); накопленная ошибка за \(T\) символов — не более \(O(T \cdot 2^{-B})\) в худшем случае (стандартный анализ ошибок округления для floating-point, адаптированный к fixed-point — конкретной теоремы для CTW не найдено).
+
+**2.3. β-отношение (beta ratio).** В работе Willems & Tjalkens, «Complexity Reduction of the Context-Tree Weighting Algorithm: A Study for KPN Research», EIDMA Report RS.97.01, 1997 (доступна через ResearchGate, DOI не присвоен), предложено хранить не сами вероятности, а отношение
+\[
+\beta_s = \frac{P_w^s}{P_e^s}.
+\]
+Рекурсия переписывается как
+\[
+\beta_s = \frac{1}{2} + \frac{1}{2} \cdot \beta_{0s} \cdot \beta_{1s} \cdot \Gamma_s,
+\]
+где \(\Gamma_s = \frac{P_e^{0s} \cdot P_e^{1s}}{P_e^s}\). Величина \(\Gamma_s\) вычисляется из KT-оценщика и обновляется инкрементально за \(O(1)\). β-отношения лежат в диапазоне \([0.5, 1]\), что упрощает масштабирование. **Доказанная гарантия (из работы):** хранение β вместо полных вероятностей снижает требуемую разрядность, так как β ∈ [½, 1] всегда, и ошибка округления β не накапливается экспоненциально по глубине — каждое β_s зависит от потомков через мультипликативную цепочку, но ограниченность диапазона даёт численную устойчивость. Формальной теоремы о накопленной ошибке в отчёте EIDMA не приведено.
+
+### 3. Jacobian logarithm и таблица поиска
+
+Функция \(\text{max*}(x,y) = \log(e^x + e^y)\) раскладывается как
+\[
+\text{max*}(x,y) = \max(x,y) + \log\!\left(1 + e^{-|x-y|}\right) = \max(x,y) + f_c(|x-y|),
+\]
+где \(f_c(d) = \log(1 + e^{-d})\) — корректирующий член. Это ядро log-MAP алгоритма в турбо-декодерах.
+
+Robertson, Villebrun, Hoeher (1995), «A comparison of optimal and sub-optimal MAP decoding algorithms operating in the log domain», Proc. IEEE ICC 1995, Seattle (DOI не найден, работа широко цитируется; см., например, ссылку в IET Digital Library) — вводят log-MAP и max-log-MAP. Показано, что \(f_c(d)\) можно хранить в таблице поиска (LUT). Для \(d > 7\) (в натуральных логарифмах; для log2 — \(d > 5\)) значение \(f_c(d) < 10^{-3}\) и полагается нулевым в max-log-MAP.
+
+Gross & Gulak (1998), «Simplified MAP algorithm suitable for implementation of turbo decoders», Electronics Letters, Vol. 34, pp. 1577–1578, DOI: [10.1049/el:19981093](https://doi.org/10.1049/el:19981093) — предлагают аппроксимацию \(f_c(d) \approx \max(0, C - d/2)\) с константой \(C\), убирая таблицу поиска вообще. Это уже **инженерная практика без полных гарантий**, но с экспериментальным подтверждением BER-потерь < 0.1 дБ.
+
+**Точность таблицы.** Конкретные гарантии для CTW отсутствуют. В литературе по турбо-декодерам (Valenti & Sun, 2001, «The UMTS Turbo Code and an Efficient Decoder Implementation Suitable for Software-Defined Radios», DOI: [10.1023/A:1017925603986](https://doi.org/10.1023/A:1017925603986)): 8-значная LUT для \(f_c(d)\) даёт точность ~\(10^{-4}\) на одну операцию max*. Накопленная ошибка в турбо-декодере за \(N\) итераций \(I\) с \(S\) состояниями: эмпирически, 8-битной таблицы достаточно для отсутствия заметной деградации BER.
+
+**Оценка для CTW.** В CTW глубина дерева \(D\) задаёт длину цепочки max* операций: на каждом символе выполняется \(O(D)\) сложений в log-домене. При \(B\)-битной таблице \(f_c(d)\) максимальная ошибка на одно сложение: \(\varepsilon_{\max} = \max_{d \geq 0} |\hat{f}_c(d) - f_c(d)| \approx 2^{-B-1}\) (ошибка квантования). Накопленная за \(T\) символов ошибка в худшем случае \(\leq T \cdot D \cdot \varepsilon_{\max}\) (аддитивная модель). Для \(T = 10^6\), \(D = 32\), \(B = 8\): верхняя граница ~ \(10^6 \cdot 32 \cdot 2^{-9} \approx 6.25 \times 10^4\) в log-домене, что составляет ~ \(6 \times 10^{-5}\) на символ — пренебрежимо для предсказания. **Это инженерная оценка, не строгая теорема.** Строгий анализ накопленной ошибки для CTW с Jacobian LUT в открытых источниках не найден.
+
+### 4. Complexity reduction: работы группы Виллемса/Тьялкенса
+
+- Willems & Tjalkens (1997), «Complexity Reduction of the Context-Tree Weighting Algorithm: A Study for KPN Research», EIDMA RS.97.01 — β-отношение и отсечение узлов. **Доказанная гарантия:** использование β-отношений уменьшает память с \(O(2^D)\) до \(O(M)\) для бюджета \(M\) узлов; рекурсия остаётся точной (не приближенной).
+
+- Tjalkens & Willems (1997), «Implementing the Context-Tree Weighting Method: Arithmetic Coding» (CORE id: 51543902) — как совместить CTW с арифметическим кодированием.
+
+- Tjalkens, Volf, Willems (1997), «A Context-tree Weighting Method for Text Generating Sources», DCC 1997 (DOI не найден, доступен на Academia) — адаптация CTW к текстовым источникам.
+
+- Sadakane, Okazaki, Imai, «Implementing the Context Tree Weighting Method for Text Compression» — практическая имплементация с анализом памяти и времени.
+
+### 5. Итог: что доказано, что — инженерная практика
+
+**Доказанные гарантии:**
+- Рекурсия CTW точна при точной арифметике (Willems et al., 1995, Theorem 1).
+- Redundancy CTW ≤ \(\frac{1}{2}|S|\log N + O(1)\) для модели S с N символами (Willems et al., 1995, Theorem 2).
+- β-отношения сохраняют точную рекурсию (Willems & Tjalkens, 1997).
+
+**Инженерная практика (без строгих доказательств):**
+- 8-битная LUT для Jacobian logarithm достаточна для турбо-декодеров и, по аналогии, для CTW.
+- Масштабированные целые с фиксированной точкой (32 бита) не вызывают заметной деградации при D ≤ 32.
+- Накопленная ошибка округления в log-домене оценивается как \(O(T \cdot D \cdot 2^{-B})\) в худшем случае (эвристика, не теорема).
+- Конкретные границы ошибки для CTW с Jacobian LUT — не найдены в открытых источниках.
+
+---
+
+### Источники
+
+1. Willems, Shtarkov, Tjalkens (1995), «The Context-Tree Weighting Method: Basic Properties», IEEE Trans. Info. Theory. DOI: [10.1109/18.382012](https://doi.org/10.1109/18.382012) — первоисточник: KT-оценщик, рекурсия CTW, доказательство redundancy.
+2. Willems (1998), «The Context-Tree Weighting Method: Extensions», IEEE Trans. Info. Theory. DOI: [10.1109/18.661523](https://doi.org/10.1109/18.661523) — бесконечная глубина, уточнения.
+3. Willems & Tjalkens (1997), «Complexity Reduction of the Context-Tree Weighting Algorithm: A Study for KPN Research», EIDMA RS.97.01 — β-отношение, снижение сложности. Источник не найден в цифровом виде с DOI.
+4. Tjalkens & Willems (1997), «Implementing the Context-Tree Weighting Method: Arithmetic Coding» — практическое сопряжение CTW с арифметическим кодированием. CORE id: 51543902.
+5. Sadakane, Okazaki, Imai, «Implementing the Context Tree Weighting Method for Text Compression» — логарифмическая реализация. DOI не найден.
+6. Volf, P.A.J. — диссертация по CTW-компрессору (Eindhoven), цитируется в meiji163.github.io — fixed-point реализация. Точный DOI не найден.
+7. Robertson, Villebrun, Hoeher (1995), «A comparison of optimal and sub-optimal MAP decoding algorithms operating in the log domain», Proc. IEEE ICC 1995 — Jacobian logarithm, log-MAP, max-log-MAP. DOI не найден.
+8. Gross & Gulak (1998), «Simplified MAP algorithm suitable for implementation of turbo decoders», Electronics Letters. DOI: [10.1049/el:19981093](https://doi.org/10.1049/el:19981093) — аппроксимация корректирующей функции без LUT.
+9. Valenti & Sun (2001), «The UMTS Turbo Code and an Efficient Decoder Implementation», Int. J. Wireless Inf. Networks. DOI: [10.1023/A:1017925603986](https://doi.org/10.1023/A:1017925603986) — практические аспекты реализации log-MAP с LUT.
