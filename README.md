@@ -32,9 +32,11 @@
 - **4. Бюджетный слой** — арена, вытеснение листьев, политики, инварианты. ✅
   результаты и абляция — [notes/stage4-results.md](notes/stage4-results.md)
 - **5. Эмпирика на 100 МБ** (enwik8) = пункт (4). ✅ кривая утечки —
-  [notes/stage5-results.md](notes/stage5-results.md); осталcя компаратор
-- **5б. Компаратор** min_{S∈T_M} L_S(x) — без него в эксперименте нет «сожаления»,
-  а есть только утечка относительно полного CTW. ← следующий
+  [notes/stage5-results.md](notes/stage5-results.md)
+- **5б. Компаратор** min_{S∈T_M} L_S(x) — сожаление относительно лучшего M-листового
+  дерева. ✅ [src/comparator.rs](src/comparator.rs) + SA-бэкенд
+  (`tools/sa_prod.py` / `tools/sa_prod_fast.py`); таблица сожаления для D=24 и
+  D=48 на полном enwik8 — [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md)
 - **6. Теория (2)/(3)** — параллельный трек, маршруты уточнены (см. ниже).
 - **7. Препринт и подача.**
 
@@ -76,9 +78,11 @@ counting-аргумент «c·M узлов не различают более O
 
 ```bash
 rustc -O --edition 2021 -o bin/ctw.exe src/ctw.rs
+rustc -O --edition 2021 -o bin/comparator.exe src/comparator.rs
 python tools/validate.py       # 21 сверка с точным эталоном на дробях
 python tools/budget_tests.py   # инварианты бюджета и вытеснения
 python tools/leak_curve.py data/enwik8   # кривая утечки на 100 МБ
+python tools/comparator_check.py          # компаратор vs DP эталон
 ```
 
 Эталон считает кодовую длину по определению, точной дробью, и покрывает как
