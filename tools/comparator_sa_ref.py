@@ -128,15 +128,14 @@ def weakest_link_frontier_sa(nodes, first_occ):
         if alive[u] and ch0[u] and ch1[u] and leaves[u] > 1:
             a = (cost_leaf(nodes, u) - R[u]) / (leaves[u] - 1)
             alpha[u] = a
-            heapq.heappush(h, (a, first_occ[u], nodes[u]["dep"]))
+            heapq.heappush(h, (a, first_occ[u], nodes[u]["dep"], u))
 
     h = []
-    fo_dep_to_u = {(first_occ[u], nodes[u]["dep"]): u for u in range(n)}
     for u in range(n):
         push(u)
+    cap = min(max(2 * n, 16), 8_000_000)
     while h:
-        a, fo, dep = heapq.heappop(h)
-        u = fo_dep_to_u[(fo, dep)]
+        a, _fo, _dep, u = heapq.heappop(h)
         if not alive[u] or leaves[u] <= 1:
             continue
         if alpha.get(u) != a:
@@ -158,13 +157,20 @@ def weakest_link_frontier_sa(nodes, first_occ):
             if leaves[v] == 1:
                 break
             alpha[v] = (cost_leaf(nodes, v) - R[v]) / (leaves[v] - 1)
-            heapq.heappush(h, (alpha[v], first_occ[v], nodes[v]["dep"]))
+            heapq.heappush(h, (alpha[v], first_occ[v], nodes[v]["dep"], v))
             if v == 0:
                 break
             v = par[v]
         pts.append((leaves[0], R[0]))
         if leaves[0] == 1:
             break
+        if len(h) > cap:
+            # перестройка из живых кандидатов: не даём устаревшим записям
+            # разрастись (та же защита, что в Rust comparator.rs)
+            h.clear()
+            for u2 in range(n):
+                if alive[u2] and ch0[u2] and ch1[u2] and leaves[u2] > 1:
+                    heapq.heappush(h, (alpha[u2], first_occ[u2], nodes[u2]["dep"], u2))
     return pts
 
 

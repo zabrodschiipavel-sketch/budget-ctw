@@ -287,6 +287,18 @@ fn main() {
         Err(e) => { eprintln!("не читается {}: {}", args[1], e); process::exit(1); }
     };
     let data = &data[..data.len().min(limit)];
+    // Node.n хранит счётчики в u32. Корень получает один инкремент на бит,
+    // поэтому входы > u32::MAX бит молча переполнили бы счётчики в release.
+    // Явный backend всё равно не масштабируется до такого размера; для них
+    // предназначен tools/sa_prod.py с u64-счётчиками.
+    if data.len() > (u32::MAX as usize) / 8 {
+        eprintln!(
+            "вход слишком велик для explicit-компаратора: {} байт; максимум {} байт (u32 counters). Используйте tools/sa_prod.py",
+            data.len(),
+            (u32::MAX as usize) / 8
+        );
+        process::exit(2);
+    }
 
     let nodes = build_tree(data, depth);
     let fr = weakest_link(&nodes);

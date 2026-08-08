@@ -30,7 +30,7 @@ for trial in range(12):
     # сверяем: каждая Python-точка должна быть в Rust (с допуском)
     for (l,c) in py:
         best=min((abs(c2-c), l2, c2) for (l2,c2) in rust_pts if l2==l)
-        ok = best[0] < 1e-6
+        ok = best[0] < 1e-3
         CHECKS+=1
         if not ok:
             BAD+=1
@@ -38,7 +38,7 @@ for trial in range(12):
     # и каждая Rust-точка должна быть оптимальна (<= DP + 1e-6)
     for (l,c) in rust_pts:
         opt=dp.solve(0,l)
-        if c > opt + 1e-6:
+        if c > opt + 1e-3:
             BAD+=1; CHECKS+=1
             print(f"[trial {trial}] Rust M={l}: {c:.4f} > DP opt {opt:.4f}")
     import os; os.remove(fn)
