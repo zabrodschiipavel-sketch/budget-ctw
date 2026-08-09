@@ -34,9 +34,13 @@
 - **5. Эмпирика на 100 МБ** (enwik8) = пункт (4). ✅ кривая утечки —
   [notes/stage5-results.md](notes/stage5-results.md)
 - **5б. Компаратор** min_{S∈T_M} L_S(x) — сожаление относительно лучшего M-листового
-  дерева. ✅ [src/comparator.rs](src/comparator.rs) + SA-бэкенд
-  (`tools/sa_prod.py` / `tools/sa_prod_fast.py`); таблица сожаления для D=24 и
-  D=48 на полном enwik8 — [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md)
+  дерева. ⚠️ **отозван, требует переделки**: компаратор минимизирует по строгому
+  подклассу T_M (обрывает дерево на первом унарном узле), поэтому таблицы сожаления в
+  [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md)
+  недействительны — разбор и замеры в
+  [notes/stage5b-comparator-audit.md](notes/stage5b-comparator-audit.md).
+  Код: [src/comparator.rs](src/comparator.rs) + SA-бэкенд
+  (`tools/sa_prod.py` / `tools/sa_prod_fast.py`)
 - **6. Теория (2)/(3)** — параллельный трек, маршруты уточнены (см. ниже).
 - **7. Препринт и подача.**
 
