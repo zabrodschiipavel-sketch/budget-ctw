@@ -34,13 +34,14 @@
 - **5. Эмпирика на 100 МБ** (enwik8) = пункт (4). ✅ кривая утечки —
   [notes/stage5-results.md](notes/stage5-results.md)
 - **5б. Компаратор** min_{S∈T_M} L_S(x) — сожаление относительно лучшего M-листового
-  дерева. ⚠️ **отозван, требует переделки**: компаратор минимизирует по строгому
-  подклассу T_M (обрывает дерево на первом унарном узле), поэтому таблицы сожаления в
-  [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md)
-  недействительны — разбор и замеры в
-  [notes/stage5b-comparator-audit.md](notes/stage5b-comparator-audit.md).
-  Код: [src/comparator.rs](src/comparator.rs) + SA-бэкенд
-  (`tools/sa_prod.py` / `tools/sa_prod_fast.py`)
+  дерева. ⚠️ **частично исправлен**: класс сравнения был занижен (компаратор обрывал
+  дерево на первом унарном узле вместо T_M из постановки) — разбор в
+  [notes/stage5b-comparator-audit.md](notes/stage5b-comparator-audit.md). Explicit-бэкенд
+  ([src/comparator.rs](src/comparator.rs)) исправлен и перепроверен; **D=24 на полном
+  enwik8 пересчитан**, и впервые посчитано настоящее R_T = L_ядро − min_S L_S —
+  [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md). SA-бэкенд
+  (`tools/sa_prod.py` / `tools/sa_prod_fast.py`, единственный путь к **D=48/100 МБ**)
+  содержит ту же ошибку класса и ещё не исправлен — числа D=48 в таблице недействительны
 - **6. Теория (2)/(3)** — параллельный трек, маршруты уточнены (см. ниже).
 - **7. Препринт и подача.**
 

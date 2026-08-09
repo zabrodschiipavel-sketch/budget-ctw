@@ -28,7 +28,14 @@ def weakest_link_variant(nodes, mode):
     leaves = [0] * n
     alive = [True] * n
 
+    def rval(c):
+        return R[c] if c else 0.0
+
+    def lval(c):
+        return leaves[c] if c else 1
+
     def kill(u):
+        """Хоронит РЕАЛЬНОЕ поддерево u; виртуальные листья нигде не хранятся."""
         stack = [u]
         while stack:
             w = stack.pop()
@@ -38,23 +45,21 @@ def weakest_link_variant(nodes, mode):
             if ch1[w]:
                 stack.append(ch1[w])
 
+    # T_max: внутренний узел — любой с ≥1 реальным ребёнком; отсутствующий
+    # брат — виртуальный лист (0.0, 1), символически, без материализации.
     for u in range(n - 1, -1, -1):
-        if ch0[u] and ch1[u]:
-            R[u] = R[ch0[u]] + R[ch1[u]]
-            leaves[u] = leaves[ch0[u]] + leaves[ch1[u]]
+        if ch0[u] or ch1[u]:
+            R[u] = rval(ch0[u]) + rval(ch1[u])
+            leaves[u] = lval(ch0[u]) + lval(ch1[u])
         else:
             R[u] = cost_leaf(nodes, u)
             leaves[u] = 1
-            if ch0[u]:
-                kill(ch0[u])
-            if ch1[u]:
-                kill(ch1[u])
 
     pts = [(leaves[0], R[0])]
     alpha = {}
 
     def push(u):
-        if alive[u] and ch0[u] and ch1[u] and leaves[u] > 1:
+        if alive[u] and (ch0[u] or ch1[u]) and leaves[u] > 1:
             a = (cost_leaf(nodes, u) - R[u]) / (leaves[u] - 1)
             alpha[u] = a
             heapq.heappush(h, (a, u))
@@ -62,8 +67,8 @@ def weakest_link_variant(nodes, mode):
     def refresh_ancestors(u):
         v = par[u]
         while v != u:
-            R[v] = R[ch0[v]] + R[ch1[v]]
-            leaves[v] = leaves[ch0[v]] + leaves[ch1[v]]
+            R[v] = rval(ch0[v]) + rval(ch1[v])
+            leaves[v] = lval(ch0[v]) + lval(ch1[v])
             if leaves[v] == 1:
                 break
             alpha[v] = (cost_leaf(nodes, v) - R[v]) / (leaves[v] - 1)
@@ -101,26 +106,12 @@ def weakest_link_variant(nodes, mode):
             for uu in batch:
                 if not alive[uu] or leaves[uu] <= 1:
                     continue
-                stack = [uu]
-                while stack:
-                    w = stack.pop()
-                    alive[w] = False
-                    if ch0[w]:
-                        stack.append(ch0[w])
-                    if ch1[w]:
-                        stack.append(ch1[w])
+                kill(uu)
                 R[uu] = cost_leaf(nodes, uu)
                 leaves[uu] = 1
                 refresh_ancestors(uu)
         else:
-            stack = [u]
-            while stack:
-                w = stack.pop()
-                alive[w] = False
-                if ch0[w]:
-                    stack.append(ch0[w])
-                if ch1[w]:
-                    stack.append(ch1[w])
+            kill(u)
             R[u] = cost_leaf(nodes, u)
             leaves[u] = 1
             refresh_ancestors(u)

@@ -15,8 +15,10 @@ O(узлы · log узлы) вместо сетки по λ. Проверяет�
 никогда не кандидат (иначе устаревшие записи кучи «отщипывают» его
 повторно, не меняя числа листьев, — баг, дававший мусорные точки).
 
-Дерево полное (см. comparator_ref.build_tree): у каждого внутреннего узла
-два ребёнка, виртуальные листья имеют нулевые счётчики и стоимость 0.
+Дерево честное (класс T_M постановки П4): внутренний узел — любой с ≥1
+встреченным ребёнком; отсутствующий брат — виртуальный лист (нулевые
+счётчики, нулевая стоимость), который нигде не материализуется как объект,
+а входит в R(u)/leaves(u) символически, парой (0.0, 1).
 """
 import heapq
 import sys
@@ -39,8 +41,15 @@ def weakest_link_frontier(nodes):
     leaves = [0] * n
     alive = [True] * n
 
+    def rval(c):
+        return R[c] if c else 0.0
+
+    def lval(c):
+        return leaves[c] if c else 1
+
     def kill_subtree(u):
-        """Пометить поддерево u как не входящее в дерево (мёртвое)."""
+        """Пометить РЕАЛЬНОЕ поддерево u как мёртвое (виртуальные листья
+        нигде не хранятся — хоронить нечего)."""
         stack = [u]
         while stack:
             w = stack.pop()
@@ -50,25 +59,21 @@ def weakest_link_frontier(nodes):
             if ch1[w]:
                 stack.append(ch1[w])
 
+    # T_max: узел внутренний, если есть хотя бы один реальный ребёнок —
+    # второй слот при отсутствии берётся как виртуальный лист (0.0, 1).
     for u in range(n - 1, -1, -1):
-        if ch0[u] and ch1[u]:
-            R[u] = R[ch0[u]] + R[ch1[u]]
-            leaves[u] = leaves[ch0[u]] + leaves[ch1[u]]
+        if ch0[u] or ch1[u]:
+            R[u] = rval(ch0[u]) + rval(ch1[u])
+            leaves[u] = lval(ch0[u]) + lval(ch1[u])
         else:
-            # узел с ≤1 ребёнком: лист. Его поддерево (если есть) в полное
-            # дерево не входит: c(u) = 0, спуск не может дать меньше.
             R[u] = cost_leaf(nodes, u)
             leaves[u] = 1
-            if ch0[u]:
-                kill_subtree(ch0[u])
-            if ch1[u]:
-                kill_subtree(ch1[u])
     pts = [(leaves[0], R[0])]
 
     alpha = {}
 
     def push(u):
-        if alive[u] and ch0[u] and ch1[u] and leaves[u] > 1:
+        if alive[u] and (ch0[u] or ch1[u]) and leaves[u] > 1:
             a = (cost_leaf(nodes, u) - R[u]) / (leaves[u] - 1)
             alpha[u] = a
             heapq.heappush(h, (a, u))
@@ -82,16 +87,9 @@ def weakest_link_frontier(nodes):
             continue
         if alpha.get(u) != a:
             continue  # устаревшая запись: α пересчитан после отщипывания ниже
-        # отщипываем u: узел становится листом; всё его поддерево выбывает
-        # из кандидатов (вклад потомков уже учтён в листе u)
-        stack = [u]
-        while stack:
-            w = stack.pop()
-            alive[w] = False
-            if ch0[w]:
-                stack.append(ch0[w])
-            if ch1[w]:
-                stack.append(ch1[w])
+        # отщипываем u: узел становится листом; всё его (реальное) поддерево
+        # выбывает из кандидатов (вклад потомков уже учтён в листе u)
+        kill_subtree(u)
         R[u] = cost_leaf(nodes, u)
         leaves[u] = 1
         # пересчёт предков: от родителя u вверх до корня включительно.
@@ -99,8 +97,8 @@ def weakest_link_frontier(nodes):
         # par[0] == 0, поэтому цикл просто не выполняется).
         v = par[u]
         while v != u:
-            R[v] = R[ch0[v]] + R[ch1[v]]
-            leaves[v] = leaves[ch0[v]] + leaves[ch1[v]]
+            R[v] = rval(ch0[v]) + rval(ch1[v])
+            leaves[v] = lval(ch0[v]) + lval(ch1[v])
             if leaves[v] == 1:
                 break
             alpha[v] = (cost_leaf(nodes, v) - R[v]) / (leaves[v] - 1)

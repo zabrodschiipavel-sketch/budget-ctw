@@ -8,7 +8,10 @@
 //! Алгоритм:
 //!   1. Полное дерево встреченных контекстов (та же модель битов, что в
 //!      ядре ctw.rs: байт → 8 бит MSB-first, контекст глубины d = (hist>>d)&1,
-//!      hist = (hist<<1)|x; счётчики n[0], n[1] следующего бита).
+//!      hist = (hist<<1)|x; счётчики n[0], n[1] следующего бита). Контекст,
+//!      ни разу не встретившийся, — легальный лист T_M с нулевой массой и
+//!      нулевой стоимостью; в узлах он не материализуется (счётчик молчаливо
+//!      подразумевается нулевым), а входит в дерево символически — см. п. 3.
 //!   2. Стоимость узла как листа c(u) = n_u·H(n0/n_u, n1/n_u).
 //!      Вогнутость энтропии ⇒ полное дерево оптимально без бюджета;
 //!      с бюджетом M — выбор расщеплений максимального выигрыша
@@ -16,11 +19,12 @@
 //!   3. Жадное отщипывание слабейшего звена (Breiman): узел с минимальным
 //!      α = (c(u) − R(u))/(листья(u) − 1), где R(u) — стоимость текущего
 //!      поддерева. Даёт все точки нижней выпуклой оболочки (листья, биты).
+//!      Узел с ровно одним встреченным ребёнком — ВНУТРЕННИЙ: у него есть
+//!      и наблюдённое поддерево, и виртуальный лист-брат нулевой стоимости
+//!      (n = 0 ⇒ c = 0). R(u) и число листьев(u) считают этого брата как
+//!      (R=0, листьев=1), не создавая для него узла в arena.
 //!   4. Для запрошенных бюджетов M — min стоимости по точкам с листьями ≤ M
 //!      (для M вне оболочки это верхняя граница — оговорка спеки §5).
-//!
-//! Узел с одним ребёнком — лист (его поддерево исключается): c(u) = 0,
-//! спуск не может дать меньшую стоимость.
 //!
 //! Сборка:  rustc -O --edition 2021 -o bin/comparator.exe src/comparator.rs
 //! Запуск:  comparator <файл> [--depth D] [--limit N] [--budgets "M1,M2,..."]
@@ -110,8 +114,22 @@ fn weakest_link(nodes: &[Node]) -> Frontier {
     }
     let mut R = vec![0.0f64; n];
     let mut leaves = vec![0u32; n];
-    
-    // Поддерево u исключается из дерева (узел-лист с одним ребёнком).
+
+    // Отсутствующий ребёнок — виртуальный лист нулевой стоимости: он не
+    // материализуется как узел arena, но участвует в R(u)/листьях(u) как
+    // (0.0, 1). Реальный узел без единого ребёнка задаёт базовый случай.
+    #[inline]
+    fn rval(c: u32, r: &[f64]) -> f64 {
+        if c != 0 { r[c as usize] } else { 0.0 }
+    }
+    #[inline]
+    fn lval(c: u32, leaves: &[u32]) -> u32 {
+        if c != 0 { leaves[c as usize] } else { 1 }
+    }
+
+    // Поддерево u исключается из дерева (u стал листом после отщипывания).
+    // Помечает только РЕАЛЬНЫЕ узлы — виртуальные братья нигде не хранятся,
+    // хоронить нечего.
     fn kill(leaves: &mut [u32], ch0: &[u32], ch1: &[u32], u: u32) {
         let mut stack = vec![u];
         while let Some(w) = stack.pop() {
@@ -125,19 +143,16 @@ fn weakest_link(nodes: &[Node]) -> Frontier {
         }
     }
 
+    // T_max: узел внутренний, если у него есть ХОТЯ БЫ ОДИН реальный
+    // ребёнок (второй слот, если пуст, — виртуальный лист). Ничего не
+    // отбрасывается: каждый реальный узел arena входит в T_max как есть.
     for u in (0..n).rev() {
-        if ch0[u] != 0 && ch1[u] != 0 {
-            R[u] = R[ch0[u] as usize] + R[ch1[u] as usize];
-            leaves[u] = leaves[ch0[u] as usize] + leaves[ch1[u] as usize];
+        if ch0[u] != 0 || ch1[u] != 0 {
+            R[u] = rval(ch0[u], &R) + rval(ch1[u], &R);
+            leaves[u] = lval(ch0[u], &leaves) + lval(ch1[u], &leaves);
         } else {
             R[u] = cost_leaf(&nodes[u]);
             leaves[u] = 1;
-            if ch0[u] != 0 {
-                kill(&mut leaves, &ch0, &ch1, ch0[u]);
-            }
-            if ch1[u] != 0 {
-                kill(&mut leaves, &ch0, &ch1, ch1[u]);
-            }
         }
     }
 
@@ -172,7 +187,7 @@ fn weakest_link(nodes: &[Node]) -> Frontier {
 
 
     for u in 0..n {
-        if ch0[u] != 0 && ch1[u] != 0 && leaves[u] > 1 {
+        if (ch0[u] != 0 || ch1[u] != 0) && leaves[u] > 1 {
             let a = (cost_leaf(&nodes[u]) - R[u]) / (leaves[u] - 1) as f64;
             alpha[u] = a;
             heap.push((RevF64(a), std::cmp::Reverse(u as u32)));
@@ -196,23 +211,14 @@ fn weakest_link(nodes: &[Node]) -> Frontier {
             continue; // устаревшая запись
         }
         // отщипываем u: всё поддерево выбывает, u становится листом
-        let mut stack = vec![uu];
-        while let Some(w) = stack.pop() {
-            leaves[w as usize] = 0;
-            if ch0[w as usize] != 0 {
-                stack.push(ch0[w as usize]);
-            }
-            if ch1[w as usize] != 0 {
-                stack.push(ch1[w as usize]);
-            }
-        }
+        kill(&mut leaves, &ch0, &ch1, uu);
         R[u] = cost_leaf(&nodes[u]);
         leaves[u] = 1;
-        // пересчёт предков до корня
+        // пересчёт предков до корня (виртуальные дети — снова (0.0, 1))
         let mut v = par[u] as usize;
         while v != u {
-            R[v] = R[ch0[v] as usize] + R[ch1[v] as usize];
-            leaves[v] = leaves[ch0[v] as usize] + leaves[ch1[v] as usize];
+            R[v] = rval(ch0[v], &R) + rval(ch1[v], &R);
+            leaves[v] = lval(ch0[v], &leaves) + lval(ch1[v], &leaves);
             if leaves[v] == 1 {
                 break;
             }
@@ -231,7 +237,7 @@ fn weakest_link(nodes: &[Node]) -> Frontier {
         if heap.len() > heap_cap {
             heap.clear();
             for u in 0..n {
-                if ch0[u] != 0 && ch1[u] != 0 && leaves[u] > 1 {
+                if (ch0[u] != 0 || ch1[u] != 0) && leaves[u] > 1 {
                     heap.push((RevF64(alpha[u]), std::cmp::Reverse(u as u32)));
                 }
             }
@@ -303,18 +309,22 @@ fn main() {
     let nodes = build_tree(data, depth);
     let fr = weakest_link(&nodes);
 
-    let nbits = (data.len() * 8) as f64;
+    // bpc здесь и везде ниже — bits per character, бит/БАЙТ (как в ядре
+    // ctw.rs и во всех заметках проекта); бит/бит = bpc / 8, отдельная
+    // нормированная величина (доля от максимальной энтропии бита).
+    let nbytes = data.len() as f64;
+    let nbits = nbytes * 8.0;
     println!("узлов в полном дереве   {}", nodes.len());
     println!("точек на оболочке       {}", fr.points.len());
     println!("листья (полное дерево)  {}", fr.points[0].0);
-    println!("стоимость полного дерева {:.3} бит ({:.4} bpc)",
-             fr.points[0].1, fr.points[0].1 / nbits);
+    println!("стоимость полного дерева {:.3} бит ({:.4} бит/бит, {:.4} bpc)",
+             fr.points[0].1, fr.points[0].1 / nbits, fr.points[0].1 / nbytes);
     println!();
 
     if npoints > 0 {
-        println!("первые {} точек оболочки (листья, биты, bpc):", npoints);
+        println!("первые {} точек оболочки (листья, биты, бит/бит, bpc):", npoints);
         for (l, c) in fr.points.iter().take(npoints) {
-            println!("  {:>10}  {:>14.3}  {:>8.4}", l, c, c / nbits);
+            println!("  {:>10}  {:>14.3}  {:>8.4}  {:>8.4}", l, c, c / nbits, c / nbytes);
         }
         println!();
     }
@@ -331,7 +341,7 @@ fn main() {
             }
             best.push(b);
         }
-        println!("бюджет M (листья)  стоимость (бит)      bpc   верхняя?");
+        println!("бюджет M (листья)  стоимость (бит)   бит/бит      bpc   верхняя?");
         for (i, &m) in budgets.iter().enumerate() {
             let b = best[i];
             if b.is_infinite() {
@@ -341,8 +351,8 @@ fn main() {
             // точная ли это точка оболочки (т.е. достижим минимум)
             let exact = fr.points.iter().any(|&(l, c)| (l as u64) <= m && (c - b).abs() < 1e-9);
             println!(
-                "{:>16}  {:>16.3}  {:>8.4}   {}",
-                m, b, b / nbits, if exact { "точная" } else { "верхняя" }
+                "{:>16}  {:>16.3}  {:>8.4}  {:>8.4}   {}",
+                m, b, b / nbits, b / nbytes, if exact { "точная" } else { "верхняя" }
             );
         }
     }

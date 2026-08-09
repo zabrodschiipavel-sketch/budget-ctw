@@ -6,6 +6,17 @@
 Ядро (`src/ctw.rs`) при этом в порядке: `validate.py` 21/21, `budget_tests.py` — все
 инварианты, 746 строк при лимите 1000.
 
+**Статус исправления (2026-08-10, тем же днём).** Explicit-бэкенд
+(`src/comparator.rs`, `tools/comparator_ref.py`, `tools/comparator_wl.py`,
+`tools/comparator_batch.py`) исправлен, перепроверен (`comparator_check.py`,
+`comparator_consistency.py`, `comparator_rust_check.py` — 2352 сверки Rust
+против Python DP, 0 расхождений) и перепрогнан на полном enwik8 при D=24 —
+таблица и впервые посчитанное настоящее R_T = L_ядро − min_S L_S в
+[stage5b-comparator-results.md](stage5b-comparator-results.md). **SA-бэкенд
+(единственный путь к D=48/100 МБ) содержит ту же ошибку класса на уровне
+построения дерева и не исправлен** — детали и объём работы в разделе
+«SA-бэкенд: статус» того же файла.
+
 ## Что не так
 
 Постановка П4: «Класс сравнения T_M: источники, чьё дерево контекстов имеет ≤ M

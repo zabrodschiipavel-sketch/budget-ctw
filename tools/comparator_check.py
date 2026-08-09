@@ -14,7 +14,7 @@ import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, __file__.rsplit("\\", 1)[0] if "\\" in __file__ else __file__.rsplit("/", 1)[0])
-from comparator_ref import build_tree, ExactDP, cost_leaf, bfos
+from comparator_ref import build_tree, ExactDP, cost_leaf, bfos, full_tree_cost
 
 CASES = [
     (b"abababababababab", 8),
@@ -26,15 +26,6 @@ CASES = [
     (b"hello world hello world hello world", 12),
     (b"a", 4),
 ]
-
-
-def full_tree_cost(nodes):
-    """Стоимость полного дерева: каждый узел с двумя детьми расщеплён."""
-    total = 0.0
-    for u, nd in enumerate(nodes):
-        if not (nd["ch"][0] and nd["ch"][1]):
-            total += cost_leaf(nodes, u)
-    return total
 
 
 def main():
@@ -84,9 +75,9 @@ def main():
                 print(f"  НЕМОНОТОННО: dp[{m+1}]={dp[m]:.4f} > dp[{m}]={dp[m-1]:.4f}")
                 ok = False
         # 4) полное дерево: DP при max_m == все листья должен сойтись к full
-        #    (если max_m достаточен). Берём число листьев полного дерева.
+        #    (если max_m достаточен). Честный лист — узел совсем без детей.
         full_leaves = sum(
-            1 for nd in nodes if not (nd["ch"][0] and nd["ch"][1])
+            1 for nd in nodes if not nd["ch"][0] and not nd["ch"][1]
         )
         if full_leaves <= max_m:
             if abs(dp[full_leaves - 1] - full) > 1e-6:

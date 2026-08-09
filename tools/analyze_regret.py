@@ -21,20 +21,27 @@ def parse_comparator_output(text: str):
         if m: result['full_tree_nodes'] = int(m.group(1)); continue
         m = re.match(r'листья \(полное дерево\)\s+(\d+)', line)
         if m: result['full_tree_leaves'] = int(m.group(1)); continue
-        m = re.match(r'стоимость полного дерева\s+([\d.]+)\s+бит\s+\(([\d.]+)\s+bpc\)', line)
-        if m: 
+        # "X бит (Y бит/бит, Z bpc)" — comparator.rs печатает обе единицы;
+        # regex ниже разбирает и старый двухзначный, и новый трёхзначный
+        # формат (bpc — последнее число в скобках в обоих случаях).
+        m = re.match(
+            r'стоимость полного дерева\s+([\d.]+)\s+бит\s+\(([\d.]+)(?:\s+бит/бит,\s+([\d.]+))?\s+bpc\)',
+            line,
+        )
+        if m:
             result['full_tree_cost'] = float(m.group(1))
-            result['bpc'] = float(m.group(2))
+            result['bpc'] = float(m.group(3) if m.group(3) is not None else m.group(2))
             continue
-        # точки: M  cost  bpc
+        # строки точек оболочки (--points, 3 или 4 токена: листья, биты,
+        # [бит/бит,] bpc) — bpc всегда последний токен.
         parts = line.split()
-        if len(parts) == 3:
+        if len(parts) in (3, 4):
             try:
                 M = int(parts[0])
                 cost = float(parts[1])
-                bpc = float(parts[2])
+                bpc = float(parts[-1])
                 result['points'].append((M, cost, bpc))
-            except:
+            except ValueError:
                 pass
     return result
 
