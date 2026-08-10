@@ -7,9 +7,16 @@
 - heap weakest-link с cap+перестройкой, как в Rust comparator.rs;
 - UTF-8 stdout, безопасная чистка только файлов текущего run.
 
-Семантика совпадает с tools/comparator_sa_ref.py:
-унарный узел становится листом НАВЕРХУ цепочки (не Patricia), а tie-break
-weakest-link при равных alpha = (first_occ, dep).
+**Исправлено 2026-08-10** (класс сравнения — та же ошибка, что была в
+explicit-компараторе, но на уровне построения дерева: `build()` останавливал
+спуск на первом унарном узле, выбрасывая структуру под ним). Семантика теперь
+совпадает с tools/comparator_sa_ref.py (эталон, сверено численно): дерево
+СЖАТОЕ (Patricia-подобное) — узел материализуется только на настоящем
+ветвлении или обрыве (глубина D / 1 запись в диапазоне), а число пропущенных
+унарных уровней хранится как `k` и учитывается в leaves(u) = k(u)+база(u).
+Разбор — docstring comparator_sa_ref.weakest_link_frontier_sa и
+notes/stage5b-comparator-audit.md. Tie-break weakest-link при равных alpha —
+(first_occ, dep), без изменений.
 """
 from __future__ import annotations
 
@@ -48,6 +55,7 @@ class TreeArrays:
     ch1: list[int]
     dep: list[int]
     first_occ: list[int]
+    k: list[int]
 
     def __len__(self) -> int:
         return len(self.n0)
@@ -221,9 +229,9 @@ def build_tree_from_file(path: Path, depth: int, start: float) -> tuple[TreeArra
     pref.flush()
     log(f"префиксные суммы готовы (sum label = {acc})", start)
 
-    tr = TreeArrays([], [], [], [], [], [])
+    tr = TreeArrays([], [], [], [], [], [], [])
 
-    def build(lo: int, hi: int, d: int) -> int:
+    def emit(lo: int, hi: int, d: int, k: int) -> int:
         u = len(tr.n0)
         s = int(pref[hi]) - int(pref[lo])
         tr.n0.append(hi - lo - s)
@@ -231,27 +239,49 @@ def build_tree_from_file(path: Path, depth: int, start: float) -> tuple[TreeArra
         tr.ch0.append(0)
         tr.ch1.append(0)
         tr.dep.append(d)
+        tr.k.append(k)
         tr.first_occ.append(0)
-        if d >= depth or hi - lo <= 1:
-            tr.first_occ[u] = int(np.min(poss[lo:hi]))
-            return u
-        p0 = int(keys[lo]) >> (depth - d)
-        T = np.uint64((2 * p0 + 1) << (depth - 1 - d))
-        mid = int(np.searchsorted(keys, T, side="left"))
-        if mid < lo:
-            mid = lo
-        elif mid > hi:
-            mid = hi
-        has0 = mid > lo
-        has1 = mid < hi
-        if has0 and has1:
+        return u
+
+    def build(lo: int, hi: int, d: int) -> int:
+        # Сжатие ребра: находим глубину первого возможного расхождения ЗА
+        # ОДИН шаг через XOR граничных ключей отсортированного диапазона —
+        # если keys[lo] и keys[hi-1] совпадают до глубины X, совпадают и
+        # ВСЕ ключи между ними (иначе нарушился бы порядок сортировки).
+        # Заменяет обход по уровню (O(depth) searchsorted) на O(1) + один
+        # searchsorted для настоящего ветвления — важно на 800M записей.
+        if hi - lo <= 1:
+            k = depth - d
+            d = depth
+        else:
+            diff = int(keys[lo]) ^ int(keys[hi - 1])
+            if diff == 0:
+                k = depth - d
+                d = depth
+            else:
+                dd = depth - 1 - (diff.bit_length() - 1)
+                k = dd - d
+                d = dd
+        if d < depth:
+            # d здесь гарантированно точка настоящего ветвления (см. вывод
+            # выше: старший несовпадающий бит границ ⇒ keys[lo] даёт 0,
+            # keys[hi-1] даёт 1 на этом бите ⇒ has0 и has1 оба истинны).
+            p0 = int(keys[lo]) >> (depth - d)
+            T = np.uint64((2 * p0 + 1) << (depth - 1 - d))
+            mid = int(np.searchsorted(keys, T, side="left"))
+            if mid < lo:
+                mid = lo
+            elif mid > hi:
+                mid = hi
+            u = emit(lo, hi, d, k)
             l0 = build(lo, mid, d + 1)
             l1 = build(mid, hi, d + 1)
             tr.ch0[u] = l0
             tr.ch1[u] = l1
             tr.first_occ[u] = min(tr.first_occ[l0], tr.first_occ[l1])
-        else:
-            tr.first_occ[u] = int(np.min(poss[lo:hi]))
+            return u
+        u = emit(lo, hi, d, k)
+        tr.first_occ[u] = int(np.min(poss[lo:hi]))
         return u
 
     build(0, N, 0)
@@ -265,8 +295,18 @@ def build_tree_from_file(path: Path, depth: int, start: float) -> tuple[TreeArra
 
 
 def weakest_link_arrays(tr: TreeArrays, heap_cap: int = 8_000_000) -> list[tuple[int, float]]:
+    """leaves(u) = k(u) + база(u): k(u) — СВОЁ сжатое ребро узла u (число
+    унарных уровней, поглощённых build() над этим узлом), база — 1 для
+    листа, leaves(ch0)+leaves(ch1) для ветвления (k детей уже учтён в их
+    собственных leaves рекурсивно). Лист с k>0 — тоже кандидат кучи: его
+    α = (c(u)-R(u))/(leaves(u)-1) = 0/k = 0 тождественно (R листа всегда
+    равен его cost_leaf), то есть отщипывание накопленной цепочки НИКОГДА
+    не меняет стоимость, только сокращает число листьев. Подробный вывод —
+    docstring comparator_sa_ref.weakest_link_frontier_sa (эталон, с которым
+    сверено численно).
+    """
     n = len(tr)
-    ch0, ch1 = tr.ch0, tr.ch1
+    ch0, ch1, k = tr.ch0, tr.ch1, tr.k
     par = [0] * n
     for u in range(n):
         c0, c1 = ch0[u], ch1[u]
@@ -290,21 +330,19 @@ def weakest_link_arrays(tr: TreeArrays, heap_cap: int = 8_000_000) -> list[tuple
     for u in range(n - 1, -1, -1):
         if ch0[u] and ch1[u]:
             R[u] = R[ch0[u]] + R[ch1[u]]
-            leaves[u] = leaves[ch0[u]] + leaves[ch1[u]]
+            leaves[u] = k[u] + leaves[ch0[u]] + leaves[ch1[u]]
         else:
             R[u] = cost_leaf(tr.n0[u], tr.n1[u])
-            leaves[u] = 1
-            if ch0[u]:
-                kill(ch0[u])
-            if ch1[u]:
-                kill(ch1[u])
+            leaves[u] = k[u] + 1
 
     pts = [(leaves[0], R[0])]
     alpha = [math.nan] * n
     heap: list[tuple[float, int, int, int]] = []
 
     def push(u: int) -> None:
-        if ch0[u] and ch1[u] and leaves[u] > 1:
+        # Кандидат — любой узел с leaves>1: ветвление ИЛИ лист со сжатым
+        # ребром k>0 (гарантированно α=0, см. docstring функции).
+        if leaves[u] > 1:
             a = (cost_leaf(tr.n0[u], tr.n1[u]) - R[u]) / (leaves[u] - 1)
             alpha[u] = a
             heapq.heappush(heap, (a, tr.first_occ[u], tr.dep[u], u))
@@ -332,7 +370,7 @@ def weakest_link_arrays(tr: TreeArrays, heap_cap: int = 8_000_000) -> list[tuple
         v = par[u]
         while v != u:
             R[v] = R[ch0[v]] + R[ch1[v]]
-            leaves[v] = leaves[ch0[v]] + leaves[ch1[v]]
+            leaves[v] = k[v] + leaves[ch0[v]] + leaves[ch1[v]]
             if leaves[v] == 1:
                 break
             alpha[v] = (cost_leaf(tr.n0[v], tr.n1[v]) - R[v]) / (leaves[v] - 1)
@@ -346,7 +384,7 @@ def weakest_link_arrays(tr: TreeArrays, heap_cap: int = 8_000_000) -> list[tuple
         if len(heap) > cap:
             heap.clear()
             for u2 in range(n):
-                if ch0[u2] and ch1[u2] and leaves[u2] > 1:
+                if leaves[u2] > 1:
                     heapq.heappush(heap, (alpha[u2], tr.first_occ[u2], tr.dep[u2], u2))
     return pts
 
@@ -440,29 +478,35 @@ def main() -> None:
         pts = weakest_link_arrays(tr)
         log(f"frontier: {len(pts)} точек", start)
 
+        # bpc = bits per character, бит/БАЙТ (как в ядре ctw.rs и src/comparator.rs
+        # после правки 2026-08-10); бит/бит = bpc/8, отдельная нормированная
+        # величина. Раньше здесь под именем "bpc" печаталось бит/бит — 8-кратный
+        # разнобой с остальным проектом.
+        nbytes = len(data)
         full_leaves, full_cost = pts[0]
         print()
         print(f"узлов в контрактированном дереве   {len(tr)}")
         print(f"точек на оболочке                  {len(pts)}")
         print(f"листья (полное дерево)             {full_leaves}")
-        print(f"стоимость полного дерева {full_cost:.3f} бит ({full_cost / nbits:.4f} bpc)")
+        print(f"стоимость полного дерева {full_cost:.3f} бит "
+              f"({full_cost / nbits:.4f} бит/бит, {full_cost / nbytes:.4f} bpc)")
         print()
 
         if args.points > 0:
-            print(f"первые {args.points} точек оболочки (листья, биты, bpc):")
+            print(f"первые {args.points} точек оболочки (листья, биты, бит/бит, bpc):")
             for l, c in pts[: args.points]:
-                print(f"  {l:>12}  {c:>16.3f}  {c / nbits:>10.6f}")
+                print(f"  {l:>12}  {c:>16.3f}  {c / nbits:>10.6f}  {c / nbytes:>10.6f}")
             print()
         if args.budgets:
             budgets = [int(x) for x in args.budgets.split(",") if x]
-            print("бюджет M (листья)  стоимость (бит)      bpc")
+            print("бюджет M (листья)  стоимость (бит)   бит/бит      bpc")
             # pts идут от больших листьев к меньшим; для M ищем min c при l<=M
             for m in budgets:
                 best = min((c for l, c in pts if l <= m), default=float("inf"))
                 if math.isinf(best):
                     print(f"{m:>16}  — нет дерева с ≤M листьями")
                 else:
-                    print(f"{m:>16}  {best:>16.3f}  {best / nbits:>10.4f}")
+                    print(f"{m:>16}  {best:>16.3f}  {best / nbits:>10.4f}  {best / nbytes:>10.4f}")
         log("готово", start)
     finally:
         if not args.keep:

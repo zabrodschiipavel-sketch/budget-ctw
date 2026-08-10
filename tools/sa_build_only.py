@@ -45,27 +45,32 @@ def main() -> None:
     pts = weakest_link_arrays(tr)
     log(f"frontier: {len(pts)} точек", start)
 
+    # nbits — число записей = число бит корпуса (см. комментарий выше);
+    # bpc = бит/БАЙТ (как в ядре и src/comparator.rs), нужно делить на 8 раз
+    # больше — bpc = бит/бит / 8 = (стоимость/nbits)/8 = стоимость/(nbits*8).
+    nbytes = nbits / 8
     full_leaves, full_cost = pts[0]
     print()
     print(f"узлов в контрактированном дереве   {len(tr)}")
     print(f"точек на оболочке                  {len(pts)}")
     print(f"листья (полное дерево)             {full_leaves}")
-    print(f"стоимость полного дерева {full_cost:.3f} бит ({full_cost / nbits:.6f} bpc)")
+    print(f"стоимость полного дерева {full_cost:.3f} бит "
+          f"({full_cost / nbits:.6f} бит/бит, {full_cost / nbytes:.4f} bpc)")
     print()
     if args.points > 0:
-        print(f"первые {args.points} точек оболочки (листья, биты, bpc):")
+        print(f"первые {args.points} точек оболочки (листья, биты, бит/бит, bpc):")
         for l, c in pts[: args.points]:
-            print(f"  {l:>12}  {c:>16.3f}  {c / nbits:>10.6f}")
+            print(f"  {l:>12}  {c:>16.3f}  {c / nbits:>10.6f}  {c / nbytes:>10.6f}")
         print()
     if args.budgets:
         budgets = [int(x) for x in args.budgets.split(",") if x]
-        print("бюджет M (листья)  стоимость (бит)      bpc")
+        print("бюджет M (листья)  стоимость (бит)   бит/бит      bpc")
         for m in budgets:
             best = min((c for l, c in pts if l <= m), default=float("inf"))
             if math.isinf(best):
                 print(f"{m:>16}  — нет дерева с ≤M листьями")
             else:
-                print(f"{m:>16}  {best:>16.3f}  {best / nbits:>10.4f}")
+                print(f"{m:>16}  {best:>16.3f}  {best / nbits:>10.4f}  {best / nbytes:>10.4f}")
     log("готово", start)
     # входной файл и pref НЕ удаляем — это сохранённая точка восстановления
 
