@@ -204,13 +204,18 @@ impl Chunk {
 /// лету. Возвращает (дерево, индекс корня): корень — это ДНО стека, а не
 /// последний созданный узел (последним всегда создаётся ветвление для
 /// последней группы, оно сидит глубоко).
-fn build(inputs: Vec<(File, u64, u64)>, depth: usize) -> (Tree, u32) {
-    // Узлов будет 2·(различных ключей) − 1. Доля различных падает с ростом
-    // корпуса (замерено: 1.12 узла/запись на 50 КБ → 0.53 на 2 МБ при D=48),
-    // поэтому берём умеренную стартовую ёмкость и даём Vec'ам дорасти, если
-    // данные окажутся разнообразнее.
+fn build(inputs: Vec<(File, u64, u64)>, depth: usize, nodes_hint: Option<usize>) -> (Tree, u32) {
+    // Узлов будет 2·(различных ключей) − 1, и доля различных падает с ростом
+    // корпуса: замерено при D=48 на enwik8 — 457 911 узлов на 0.41M записей,
+    // 8 943 657 на 16.8M, 28 105 213 на 83.9M, то есть рост ≈N^0.71, а
+    // отношение узлы/запись 1.12 → 0.53 → 0.335. Промахнуться вверх дорого:
+    // ёмкость сразу занимает память (при 800M записей «total/3» — это 267M
+    // слотов ≈ 6.7 ГБ при реальных ~140M узлов), промахнуться вниз — тоже
+    // (перевыделение копирует массив, держа старый и новый одновременно).
+    // total/5 попадает чуть выше ожидаемого на полном корпусе; точное число
+    // можно задать флагом --nodes-hint.
     let total: u64 = inputs.iter().map(|&(_, _, n)| n).sum();
-    let cap = (total / 3).max(1024) as usize;
+    let cap = nodes_hint.unwrap_or_else(|| (total / 5).max(1024) as usize);
     let mut chunks: Vec<Chunk> = inputs.into_iter().map(|(f, off, n)| Chunk::open(f, off, n)).collect();
     // Порядок среди РАВНЫХ ключей не важен: счётчики складываются, а
     // first_occ берётся минимумом — обе операции коммутативны.
@@ -455,7 +460,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("использование: sa_frontier <chunk1.npy> [chunk2.npy ...] [--depth D]");
-        eprintln!("  [--budgets \"M1,M2,...\"] [--points N]");
+        eprintln!("  [--budgets \"M1,M2,...\"] [--points N] [--nodes-hint N]");
         eprintln!("несколько файлов сливаются k-way на лету (каждый должен быть");
         eprintln!("отсортирован по key) — merge_all в Python не нужен");
         process::exit(2);
@@ -463,6 +468,7 @@ fn main() {
     let mut depth = 48usize;
     let mut budgets: Vec<u64> = Vec::new();
     let mut npoints = 0usize;
+    let mut nodes_hint: Option<usize> = None;
     // позиционные аргументы до первого флага — входные .npy
     let mut inputs: Vec<String> = Vec::new();
     let mut i = 1;
@@ -482,6 +488,7 @@ fn main() {
         match args[i].as_str() {
             "--depth" => { depth = need(i).parse().expect("--depth"); i += 2; }
             "--points" => { npoints = need(i).parse().expect("--points"); i += 2; }
+            "--nodes-hint" => { nodes_hint = Some(need(i).parse().expect("--nodes-hint")); i += 2; }
             "--budgets" => {
                 budgets = need(i).split(',').filter(|s| !s.is_empty())
                     .map(|s| s.parse().expect("--budgets")).collect();
@@ -506,7 +513,7 @@ fn main() {
     eprintln!("[{:6.1}s] входов {}, записей {} ({:.1}M)",
               t0.elapsed().as_secs_f64(), opened.len(), nrec, nrec as f64 / 1e6);
 
-    let (mut tr, root_idx) = build(opened, depth);
+    let (mut tr, root_idx) = build(opened, depth, nodes_hint);
     tr.shrink(); // вернуть хвост ёмкости до выделения R/leaves/k
     let tr = tr;
     let n = tr.len();
