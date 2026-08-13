@@ -332,33 +332,130 @@ fn build(inputs: Vec<(File, u64, u64)>, depth: usize) -> (Tree, u32) {
 // Weakest link
 // ---------------------------------------------------------------------------
 
-/// Запись кучи. BinaryHeap — max-heap, поэтому сравнение инвертировано:
-/// порядок (α, first_occ, dep, idx) по возрастанию, как heapq в Python.
-#[derive(Clone, Copy)]
-struct Entry { alpha: f64, fo: u32, dep: u8, idx: u32 }
+/// Ключ упорядочивания: (α, first_occ, dep, idx) по возрастанию — тот же
+/// тай-брейк, что у heapq в Python-эталоне.
+#[derive(Clone, Copy, PartialEq)]
+struct Key { alpha: f64, fo: u32, dep: u8, idx: u32 }
 
-impl PartialEq for Entry {
-    fn eq(&self, o: &Self) -> bool { self.cmp(o) == Ordering::Equal }
-}
-impl Eq for Entry {}
-impl Ord for Entry {
-    fn cmp(&self, o: &Self) -> Ordering {
-        o.alpha
-            .total_cmp(&self.alpha)
-            .then_with(|| o.fo.cmp(&self.fo))
-            .then_with(|| o.dep.cmp(&self.dep))
-            .then_with(|| o.idx.cmp(&self.idx))
+impl Key {
+    #[inline]
+    fn lt(&self, o: &Key) -> bool {
+        match self.alpha.total_cmp(&o.alpha) {
+            Ordering::Less => true,
+            Ordering::Greater => false,
+            Ordering::Equal => (self.fo, self.dep, self.idx) < (o.fo, o.dep, o.idx),
+        }
     }
 }
-impl PartialOrd for Entry {
-    fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) }
+
+/// Индексированная двоичная min-куча: у каждого узла НЕ БОЛЕЕ ОДНОЙ записи,
+/// ключ можно менять на месте (sift), запись можно удалить по индексу узла.
+///
+/// Ленивая куча (запись на каждое изменение + отбраковка устаревших) здесь
+/// не работает: кандидатов сразу ~2·(число терминалов) — на 10 МБ это 28M
+/// записей, — и любая фиксированная граница чистки оказывается НИЖЕ числа
+/// живых записей, отчего чистка запускается на каждом шаге. Замерено: 946 с
+/// CPU меньше чем на 5M точек из 14M. Здесь чисток нет вовсе, а память —
+/// 8 Б/узел (heap + pos) вместо 24 Б на каждую устаревшую запись.
+struct IdxHeap {
+    heap: Vec<u32>,
+    pos: Vec<u32>, // pos[node] = место в heap, либо NONE
+}
+
+impl IdxHeap {
+    fn new(n: usize) -> IdxHeap {
+        IdxHeap { heap: Vec::with_capacity(n), pos: vec![NONE; n] }
+    }
+
+    #[inline]
+    fn sift_up<F: Fn(u32) -> Key>(&mut self, mut i: usize, key: &F) {
+        let v = self.heap[i];
+        let kv = key(v);
+        while i > 0 {
+            let p = (i - 1) / 2;
+            let hp = self.heap[p];
+            if kv.lt(&key(hp)) {
+                self.heap[i] = hp;
+                self.pos[hp as usize] = i as u32;
+                i = p;
+            } else {
+                break;
+            }
+        }
+        self.heap[i] = v;
+        self.pos[v as usize] = i as u32;
+    }
+
+    #[inline]
+    fn sift_down<F: Fn(u32) -> Key>(&mut self, mut i: usize, key: &F) {
+        let n = self.heap.len();
+        let v = self.heap[i];
+        let kv = key(v);
+        loop {
+            let l = 2 * i + 1;
+            if l >= n { break; }
+            let r = l + 1;
+            let c = if r < n && key(self.heap[r]).lt(&key(self.heap[l])) { r } else { l };
+            let hc = self.heap[c];
+            if key(hc).lt(&kv) {
+                self.heap[i] = hc;
+                self.pos[hc as usize] = i as u32;
+                i = c;
+            } else {
+                break;
+            }
+        }
+        self.heap[i] = v;
+        self.pos[v as usize] = i as u32;
+    }
+
+    /// Вставить узел или пересортировать уже вставленный после смены ключа.
+    fn upsert<F: Fn(u32) -> Key>(&mut self, u: u32, key: &F) {
+        let p = self.pos[u as usize];
+        if p == NONE {
+            self.heap.push(u);
+            let i = self.heap.len() - 1;
+            self.pos[u as usize] = i as u32;
+            self.sift_up(i, key);
+        } else {
+            // ключ мог как вырасти, так и упасть — пробуем оба направления
+            let i = p as usize;
+            self.sift_up(i, key);
+            let i2 = self.pos[u as usize] as usize;
+            if i2 == i { self.sift_down(i, key); }
+        }
+    }
+
+    fn remove<F: Fn(u32) -> Key>(&mut self, u: u32, key: &F) {
+        let p = self.pos[u as usize];
+        if p == NONE { return; }
+        let i = p as usize;
+        self.pos[u as usize] = NONE;
+        let last = self.heap.pop().expect("непустая куча");
+        if i < self.heap.len() {
+            self.heap[i] = last;
+            self.pos[last as usize] = i as u32;
+            self.sift_up(i, key);
+            let i2 = self.pos[last as usize] as usize;
+            if i2 == i { self.sift_down(i, key); }
+        }
+    }
+
+    fn pop_min<F: Fn(u32) -> Key>(&mut self, key: &F) -> Option<u32> {
+        if self.heap.is_empty() { return None; }
+        let top = self.heap[0];
+        self.remove(top, key);
+        Some(top)
+    }
+
+    fn len(&self) -> usize { self.heap.len() }
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("использование: sa_frontier <chunk1.npy> [chunk2.npy ...] [--depth D]");
-        eprintln!("  [--budgets \"M1,M2,...\"] [--points N] [--heap-cap N]");
+        eprintln!("  [--budgets \"M1,M2,...\"] [--points N]");
         eprintln!("несколько файлов сливаются k-way на лету (каждый должен быть");
         eprintln!("отсортирован по key) — merge_all в Python не нужен");
         process::exit(2);
@@ -366,7 +463,6 @@ fn main() {
     let mut depth = 48usize;
     let mut budgets: Vec<u64> = Vec::new();
     let mut npoints = 0usize;
-    let mut heap_cap = 16_000_000usize;
     // позиционные аргументы до первого флага — входные .npy
     let mut inputs: Vec<String> = Vec::new();
     let mut i = 1;
@@ -386,7 +482,6 @@ fn main() {
         match args[i].as_str() {
             "--depth" => { depth = need(i).parse().expect("--depth"); i += 2; }
             "--points" => { npoints = need(i).parse().expect("--points"); i += 2; }
-            "--heap-cap" => { heap_cap = need(i).parse().expect("--heap-cap"); i += 2; }
             "--budgets" => {
                 budgets = need(i).split(',').filter(|s| !s.is_empty())
                     .map(|s| s.parse().expect("--budgets")).collect();
@@ -453,15 +548,39 @@ fn main() {
               t0.elapsed().as_secs_f64(), full_leaves, full_cost);
 
     // --- отщипывание слабейшего звена ---
-    let alpha_of = |u: usize, r: &Vec<f64>, leaves: &Vec<u64>, tr: &Tree| -> f64 {
-        (tr.cost_leaf(u) - r[u]) / (leaves[u] - 1) as f64
+    // α кешируется в массиве и пересчитывается ТОЛЬКО когда у узламенялись
+    // r/leaves. Считать его внутри сравнения нельзя: cost_leaf зовёт log2()
+    // дважды, а просеивание кучи делает десятки сравнений на операцию —
+    // замерено, что так frontier не доходил и до 1M точек из 14M за 30+ с.
+    let mut alpha = vec![f64::INFINITY; n];
+    let recalc = |alpha: &mut Vec<f64>, r: &Vec<f64>, leaves: &Vec<u64>, u: usize| {
+        alpha[u] = if leaves[u] > 1 {
+            (tr.cost_leaf(u) - r[u]) / (leaves[u] - 1) as f64
+        } else {
+            f64::INFINITY
+        };
     };
-    let mut heap: BinaryHeap<Entry> = BinaryHeap::new();
     for u in 0..n {
-        if leaves[u] > 1 {
-            heap.push(Entry { alpha: alpha_of(u, &r, &leaves, &tr), fo: tr.fo[u], dep: tr.dep[u], idx: u as u32 });
+        recalc(&mut alpha, &r, &leaves, u);
+    }
+    macro_rules! keyf {
+        ($alpha:expr) => {
+            |u: u32| -> Key {
+                let ui = u as usize;
+                Key { alpha: $alpha[ui], fo: tr.fo[ui], dep: tr.dep[ui], idx: u }
+            }
+        };
+    }
+    let mut heap = IdxHeap::new(n);
+    {
+        let kf = keyf!(alpha);
+        for u in 0..n {
+            if leaves[u] > 1 {
+                heap.upsert(u as u32, &kf);
+            }
         }
     }
+    eprintln!("[{:6.1}s] кандидатов в куче: {}", t0.elapsed().as_secs_f64(), heap.len());
 
     // Для каждого бюджета — стоимость первой точки с листьями ≤ M (точки идут
     // по убыванию листьев и возрастанию стоимости, поэтому первая и есть
@@ -469,14 +588,9 @@ fn main() {
     let mut best: Vec<f64> = vec![f64::INFINITY; budgets.len()];
     let mut points_shown = 0usize;
     let mut npts: u64 = 1;
-    let update = |leaves0: u64, cost0: f64, best: &mut Vec<f64>| {
-        for (bi, &m) in budgets.iter().enumerate() {
-            if leaves0 <= m && !best[bi].is_finite() {
-                best[bi] = cost0;
-            }
-        }
-    };
-    update(leaves[root], r[root], &mut best);
+    for (bi, &m) in budgets.iter().enumerate() {
+        if leaves[root] <= m && !best[bi].is_finite() { best[bi] = r[root]; }
+    }
     if npoints > 0 {
         println!("первые {} точек оболочки (листья, биты):", npoints);
         println!("  {:>12}  {:>18.3}", leaves[root], r[root]);
@@ -484,21 +598,29 @@ fn main() {
     }
 
     let mut stack: Vec<u32> = Vec::new();
-    let mut rebuilds: u64 = 0;
-    while let Some(e) = heap.pop() {
-        let u = e.idx as usize;
-        if leaves[u] <= 1 { continue; }
-        if alpha_of(u, &r, &leaves, &tr) != e.alpha { continue; } // устаревшая запись
+    loop {
+        let umin = { let kf = keyf!(alpha); match heap.pop_min(&kf) { Some(u) => u, None => break } };
+        let u = umin as usize;
+        debug_assert!(leaves[u] > 1, "в куче не должно быть узлов с leaves<=1");
+
         // отщипываем u: поддерево выбывает, u становится листом (узел
         // представляет ВЕРХ сжатого ребра, поэтому ровно 1, без k)
-        stack.push(e.idx);
+        stack.push(umin);
         while let Some(w) = stack.pop() {
-            let w = w as usize;
-            leaves[w] = 0;
-            if tr.ch0[w] != NONE { stack.push(tr.ch0[w]); stack.push(tr.ch1[w]); }
+            let wi = w as usize;
+            if w != umin {
+                // потомки выбывают из рассмотрения — убираем их из кучи,
+                // иначе их ключ считался бы от leaves == 0
+                { let kf = keyf!(alpha); heap.remove(w, &kf); }
+                leaves[wi] = 0;
+                alpha[wi] = f64::INFINITY;
+            }
+            if tr.ch0[wi] != NONE { stack.push(tr.ch0[wi]); stack.push(tr.ch1[wi]); }
         }
         r[u] = tr.cost_leaf(u);
         leaves[u] = 1;
+        alpha[u] = f64::INFINITY;
+
         // пересчёт предков до корня
         let mut v = tr.par[u];
         while v != NONE {
@@ -506,35 +628,26 @@ fn main() {
             let (a, b) = (tr.ch0[vi] as usize, tr.ch1[vi] as usize);
             r[vi] = r[a] + r[b];
             leaves[vi] = k[vi] as u64 + leaves[a] + leaves[b];
-            if leaves[vi] == 1 { break; }
-            heap.push(Entry { alpha: alpha_of(vi, &r, &leaves, &tr), fo: tr.fo[vi], dep: tr.dep[vi], idx: v });
+            recalc(&mut alpha, &r, &leaves, vi);
+            if leaves[vi] <= 1 {
+                { let kf = keyf!(alpha); heap.remove(v, &kf); }
+                break;
+            }
+            { let kf = keyf!(alpha); heap.upsert(v, &kf); }
             v = tr.par[vi];
         }
         npts += 1;
-        update(leaves[root], r[root], &mut best);
+        for (bi, &m) in budgets.iter().enumerate() {
+            if leaves[root] <= m && !best[bi].is_finite() { best[bi] = r[root]; }
+        }
         if npoints > 0 && points_shown < npoints {
             println!("  {:>12}  {:>18.3}", leaves[root], r[root]);
             points_shown += 1;
         }
         if leaves[root] == 1 { break; }
-        if npts % 5_000_000 == 0 {
-            eprintln!("[{:6.1}s] точек {}, листьев {}, куча {}, перестроек {}",
-                      t0.elapsed().as_secs_f64(), npts, leaves[root], heap.len(), rebuilds);
-        }
-        if heap.len() > heap_cap {
-            rebuilds += 1;
-            // Чистим ТОЛЬКО саму кучу (O(размер кучи)), а не все n узлов:
-            // при ~200M узлов и сотнях переполнений полное сканирование —
-            // это 10^10 операций. Устаревшая запись опознаётся так же, как
-            // при обычном pop: пересчитанный α не совпал с записанным.
-            let live: Vec<Entry> = heap
-                .drain()
-                .filter(|e| {
-                    let u2 = e.idx as usize;
-                    leaves[u2] > 1 && alpha_of(u2, &r, &leaves, &tr) == e.alpha
-                })
-                .collect();
-            heap = BinaryHeap::from(live);
+        if npts % 1_000_000 == 0 {
+            eprintln!("[{:6.1}s] точек {}, листьев {}, куча {}",
+                      t0.elapsed().as_secs_f64(), npts, leaves[root], heap.len());
         }
     }
     eprintln!("[{:6.1}s] frontier: {} точек", t0.elapsed().as_secs_f64(), npts);
