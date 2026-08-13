@@ -7,10 +7,13 @@
 //! tracemalloc) это ~30 ГБ и не влезает. Здесь те же массивы в компактных
 //! типах: 42 Б/узел ⇒ ~8 ГБ, что помещается на 16-ГБ стенде.
 //!
-//! Вход — отсортированный .npy от `sa_prod.generate` + `sa_prod.merge_all`
-//! (записи `(key: u64, pos: u64, label: u8)`, 17 Б, упорядочены по key).
-//! Генерация и внешняя сортировка остаются в Python — они не были узким
-//! местом по памяти и уже проверены.
+//! Вход — .npy-файлы от `sa_prod.generate` (записи `(key: u64, pos: u64,
+//! label: u8)`, 17 Б, каждый файл отсортирован по key). Файлов можно передать
+//! несколько: они сливаются k-way на лету, прямо в построение дерева. Это
+//! снимает самую долгую фазу пайплайна — `sa_prod.merge_all` на 800M записей
+//! в Python прогоняет ~2.4 млрд записей через heapq (часы) и требует ещё
+//! 13.6 ГБ под промежуточный файл. Генерация чанков остаётся в Python:
+//! она векторная и по памяти узким местом не была.
 //!
 //! **Построение за один последовательный проход.** Терминалы честного дерева
 //! — это ровно РАЗЛИЧНЫЕ ключи (каждая группа равных ключей = один терминал
@@ -104,11 +107,26 @@ struct Tree {
 }
 
 impl Tree {
-    fn new() -> Tree {
-        Tree { n0: Vec::new(), n1: Vec::new(), ch0: Vec::new(), ch1: Vec::new(),
-               par: Vec::new(), dep: Vec::new(), fo: Vec::new() }
+    /// `cap` — стартовая ёмкость: без неё семь Vec'ов удваиваются по ходу
+    /// построения, и на пике это лишние гигабайты (перевыделение копирует
+    /// массив целиком, то есть держит старый и новый одновременно).
+    fn with_capacity(cap: usize) -> Tree {
+        Tree {
+            n0: Vec::with_capacity(cap), n1: Vec::with_capacity(cap),
+            ch0: Vec::with_capacity(cap), ch1: Vec::with_capacity(cap),
+            par: Vec::with_capacity(cap), dep: Vec::with_capacity(cap),
+            fo: Vec::with_capacity(cap),
+        }
     }
     fn len(&self) -> usize { self.n0.len() }
+
+    /// Отдать обратно неиспользованный хвост ёмкости перед тем, как рядом
+    /// встанут массивы frontier (R/leaves/k).
+    fn shrink(&mut self) {
+        self.n0.shrink_to_fit(); self.n1.shrink_to_fit();
+        self.ch0.shrink_to_fit(); self.ch1.shrink_to_fit();
+        self.par.shrink_to_fit(); self.dep.shrink_to_fit(); self.fo.shrink_to_fit();
+    }
 
     fn push(&mut self, dep: u8, n0: u32, n1: u32, fo: u32, ch0: u32, ch1: u32) -> u32 {
         let u = self.n0.len() as u32;
@@ -150,15 +168,60 @@ fn lcp_depth(a: u64, b: u64, depth: usize) -> usize {
     if diff == 0 { depth } else { depth - 1 - (63 - diff.leading_zeros()) as usize }
 }
 
-/// Строит сжатое дерево за один последовательный проход по отсортированным
-/// записям (LCP-стек вдоль правого края). Возвращает (дерево, индекс корня):
-/// корень — это ДНО стека, а не последний созданный узел (последним всегда
-/// создаётся ветвление для последней группы, оно сидит глубоко).
-fn build(mut f: File, offset: u64, n: u64, depth: usize) -> (Tree, u32) {
-    f.seek(SeekFrom::Start(offset)).expect("seek");
-    let mut rdr = BufReader::with_capacity(1 << 22, f);
+/// Один входной чанк: буферизованное чтение записей по возрастанию key.
+struct Chunk {
+    rdr: BufReader<File>,
+    left: u64,
+    head: Option<(u64, u64, u8)>, // (key, pos, label)
+}
 
-    let mut tr = Tree::new();
+impl Chunk {
+    fn open(f: File, offset: u64, n: u64) -> Chunk {
+        let mut f = f;
+        f.seek(SeekFrom::Start(offset)).expect("seek");
+        let mut c = Chunk { rdr: BufReader::with_capacity(1 << 20, f), left: n, head: None };
+        c.advance();
+        c
+    }
+    fn advance(&mut self) {
+        if self.left == 0 {
+            self.head = None;
+            return;
+        }
+        let mut b = [0u8; REC];
+        self.rdr.read_exact(&mut b).expect("чтение записи");
+        self.left -= 1;
+        self.head = Some((
+            u64::from_le_bytes(b[0..8].try_into().unwrap()),
+            u64::from_le_bytes(b[8..16].try_into().unwrap()),
+            b[16],
+        ));
+    }
+}
+
+/// Строит сжатое дерево за один последовательный проход по отсортированным
+/// записям (LCP-стек вдоль правого края); входные чанки сливаются k-way на
+/// лету. Возвращает (дерево, индекс корня): корень — это ДНО стека, а не
+/// последний созданный узел (последним всегда создаётся ветвление для
+/// последней группы, оно сидит глубоко).
+fn build(inputs: Vec<(File, u64, u64)>, depth: usize) -> (Tree, u32) {
+    // Узлов будет 2·(различных ключей) − 1. Доля различных падает с ростом
+    // корпуса (замерено: 1.12 узла/запись на 50 КБ → 0.53 на 2 МБ при D=48),
+    // поэтому берём умеренную стартовую ёмкость и даём Vec'ам дорасти, если
+    // данные окажутся разнообразнее.
+    let total: u64 = inputs.iter().map(|&(_, _, n)| n).sum();
+    let cap = (total / 3).max(1024) as usize;
+    let mut chunks: Vec<Chunk> = inputs.into_iter().map(|(f, off, n)| Chunk::open(f, off, n)).collect();
+    // Порядок среди РАВНЫХ ключей не важен: счётчики складываются, а
+    // first_occ берётся минимумом — обе операции коммутативны.
+    let mut order: BinaryHeap<(std::cmp::Reverse<u64>, usize)> = BinaryHeap::new();
+    for (i, c) in chunks.iter().enumerate() {
+        if let Some((k, _, _)) = c.head {
+            order.push((std::cmp::Reverse(k), i));
+        }
+    }
+
+    let mut tr = Tree::with_capacity(cap);
     let mut stack: Vec<u32> = Vec::with_capacity(depth + 2);
 
     // текущая группа равных ключей = будущий терминал
@@ -229,36 +292,30 @@ fn build(mut f: File, offset: u64, n: u64, depth: usize) -> (Tree, u32) {
         stack.push(t);
     };
 
-    let block = 1_000_000usize;
-    let mut buf = vec![0u8; REC * block];
-    let mut left = n;
     let mut first_group = true;
-    while left > 0 {
-        let take = block.min(left as usize);
-        let bytes = REC * take;
-        rdr.read_exact(&mut buf[..bytes]).expect("чтение записей");
-        for i in 0..take {
-            let o = i * REC;
-            let key = u64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
-            let pos = u64::from_le_bytes(buf[o + 8..o + 16].try_into().unwrap()) as u32;
-            let label = buf[o + 16];
-            if have_group && key == cur_key {
-                if label == 0 { cur_n0 += 1 } else { cur_n1 += 1 }
-                if pos < cur_fo { cur_fo = pos }
-                continue;
-            }
-            if have_group {
-                close_group(&mut tr, &mut stack, cur_key, cur_n0, cur_n1, cur_fo, prev_key, first_group);
-                first_group = false;
-                prev_key = cur_key;
-            }
-            cur_key = key;
-            cur_n0 = if label == 0 { 1 } else { 0 };
-            cur_n1 = if label == 0 { 0 } else { 1 };
-            cur_fo = pos;
-            have_group = true;
+    while let Some((std::cmp::Reverse(_), ci)) = order.pop() {
+        let (key, pos64, label) = chunks[ci].head.expect("голова чанка");
+        let pos = pos64 as u32;
+        chunks[ci].advance();
+        if let Some((k2, _, _)) = chunks[ci].head {
+            order.push((std::cmp::Reverse(k2), ci));
         }
-        left -= take as u64;
+        if have_group && key == cur_key {
+            if label == 0 { cur_n0 += 1 } else { cur_n1 += 1 }
+            if pos < cur_fo { cur_fo = pos }
+            continue;
+        }
+        if have_group {
+            debug_assert!(key > cur_key, "вход не отсортирован по key");
+            close_group(&mut tr, &mut stack, cur_key, cur_n0, cur_n1, cur_fo, prev_key, first_group);
+            first_group = false;
+            prev_key = cur_key;
+        }
+        cur_key = key;
+        cur_n0 = if label == 0 { 1 } else { 0 };
+        cur_n1 = if label == 0 { 0 } else { 1 };
+        cur_fo = pos;
+        have_group = true;
     }
     if have_group {
         close_group(&mut tr, &mut stack, cur_key, cur_n0, cur_n1, cur_fo, prev_key, first_group);
@@ -300,15 +357,27 @@ impl PartialOrd for Entry {
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("использование: sa_frontier <merged.npy> [--depth D]");
+        eprintln!("использование: sa_frontier <chunk1.npy> [chunk2.npy ...] [--depth D]");
         eprintln!("  [--budgets \"M1,M2,...\"] [--points N] [--heap-cap N]");
+        eprintln!("несколько файлов сливаются k-way на лету (каждый должен быть");
+        eprintln!("отсортирован по key) — merge_all в Python не нужен");
         process::exit(2);
     }
     let mut depth = 48usize;
     let mut budgets: Vec<u64> = Vec::new();
     let mut npoints = 0usize;
     let mut heap_cap = 16_000_000usize;
-    let mut i = 2;
+    // позиционные аргументы до первого флага — входные .npy
+    let mut inputs: Vec<String> = Vec::new();
+    let mut i = 1;
+    while i < args.len() && !args[i].starts_with("--") {
+        inputs.push(args[i].clone());
+        i += 1;
+    }
+    if inputs.is_empty() {
+        eprintln!("не задан ни один входной .npy");
+        process::exit(2);
+    }
     while i < args.len() {
         let need = |i: usize| -> String {
             if i + 1 >= args.len() { eprintln!("{}: нужен аргумент", args[i]); process::exit(2); }
@@ -332,10 +401,19 @@ fn main() {
     }
 
     let t0 = std::time::Instant::now();
-    let (f, offset, nrec) = npy_open(&args[1]);
-    eprintln!("[{:6.1}s] записей {} ({:.1}M)", t0.elapsed().as_secs_f64(), nrec, nrec as f64 / 1e6);
+    let mut opened: Vec<(File, u64, u64)> = Vec::with_capacity(inputs.len());
+    let mut nrec: u64 = 0;
+    for p in &inputs {
+        let (f, offset, n) = npy_open(p);
+        nrec += n;
+        opened.push((f, offset, n));
+    }
+    eprintln!("[{:6.1}s] входов {}, записей {} ({:.1}M)",
+              t0.elapsed().as_secs_f64(), opened.len(), nrec, nrec as f64 / 1e6);
 
-    let (tr, root_idx) = build(f, offset, nrec, depth);
+    let (mut tr, root_idx) = build(opened, depth);
+    tr.shrink(); // вернуть хвост ёмкости до выделения R/leaves/k
+    let tr = tr;
     let n = tr.len();
     let internal = tr.ch0.iter().filter(|&&c| c != NONE).count();
     eprintln!("[{:6.1}s] дерево: {} узлов, {} внутренних", t0.elapsed().as_secs_f64(), n, internal);
@@ -406,6 +484,7 @@ fn main() {
     }
 
     let mut stack: Vec<u32> = Vec::new();
+    let mut rebuilds: u64 = 0;
     while let Some(e) = heap.pop() {
         let u = e.idx as usize;
         if leaves[u] <= 1 { continue; }
@@ -438,13 +517,24 @@ fn main() {
             points_shown += 1;
         }
         if leaves[root] == 1 { break; }
+        if npts % 5_000_000 == 0 {
+            eprintln!("[{:6.1}s] точек {}, листьев {}, куча {}, перестроек {}",
+                      t0.elapsed().as_secs_f64(), npts, leaves[root], heap.len(), rebuilds);
+        }
         if heap.len() > heap_cap {
-            heap.clear();
-            for u2 in 0..n {
-                if leaves[u2] > 1 {
-                    heap.push(Entry { alpha: alpha_of(u2, &r, &leaves, &tr), fo: tr.fo[u2], dep: tr.dep[u2], idx: u2 as u32 });
-                }
-            }
+            rebuilds += 1;
+            // Чистим ТОЛЬКО саму кучу (O(размер кучи)), а не все n узлов:
+            // при ~200M узлов и сотнях переполнений полное сканирование —
+            // это 10^10 операций. Устаревшая запись опознаётся так же, как
+            // при обычном pop: пересчитанный α не совпал с записанным.
+            let live: Vec<Entry> = heap
+                .drain()
+                .filter(|e| {
+                    let u2 = e.idx as usize;
+                    leaves[u2] > 1 && alpha_of(u2, &r, &leaves, &tr) == e.alpha
+                })
+                .collect();
+            heap = BinaryHeap::from(live);
         }
     }
     eprintln!("[{:6.1}s] frontier: {} точек", t0.elapsed().as_secs_f64(), npts);
