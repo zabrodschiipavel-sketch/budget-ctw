@@ -219,7 +219,60 @@ struct Frontier {
     tmax: (u64, f64),
 }
 
+/// Выгрузить листья текущего (частично отщипнутого) дерева: строка на лист,
+/// `<контекст> <n0> <n1>`, контекст — цепочка битов от самого свежего, тот же
+/// формат, что у `ctw --dump-tree`. Виртуальный брат (слот без реального
+/// ребёнка) — законный лист класса T_M с нулевыми счётчиками, выгружается
+/// тоже: без него сравнение множеств контекстов было бы неполным.
+fn dump_leaves(
+    nodes: &[Node],
+    leaves: &[u32],
+    ch0: &[u32],
+    ch1: &[u32],
+    path: &str,
+) -> std::io::Result<usize> {
+    use std::io::Write;
+    let mut w = std::io::BufWriter::new(fs::File::create(path)?);
+    let mut n = 0usize;
+    // Стек хранит (узел, префикс-строка). Глубина ≤ D, ветвлений много, но
+    // строки короткие — на 7M узлов это доли секунды.
+    let mut stack: Vec<(u32, String)> = vec![(0, String::new())];
+    while let Some((u, pref)) = stack.pop() {
+        let ui = u as usize;
+        if leaves[ui] == 1 {
+            let nd = &nodes[ui];
+            writeln!(w, "{} {} {}", if pref.is_empty() { "-" } else { &pref }, nd.n[0], nd.n[1])?;
+            n += 1;
+            continue;
+        }
+        for (b, &c) in [ch0[ui], ch1[ui]].iter().enumerate() {
+            let mut p = pref.clone();
+            p.push(if b == 0 { '0' } else { '1' });
+            if c == 0 {
+                writeln!(w, "{} 0 0", p)?; // виртуальный брат, 0 бит
+                n += 1;
+            } else {
+                // Мёртвых детей у живого внутреннего узла быть не может:
+                // kill() хоронит строго поддерево отщипнутого узла, а сам он
+                // тут же становится листом (leaves = 1), и обход на нём встаёт.
+                debug_assert!(leaves[c as usize] > 0, "мёртвый ребёнок у внутреннего узла");
+                stack.push((c, p));
+            }
+        }
+    }
+    w.flush()?;
+    Ok(n)
+}
+
 fn weakest_link(nodes: &[Node], model: Cost) -> Frontier {
+    weakest_link_dump(nodes, model, None)
+}
+
+/// `dump`: (M, файл) — выгрузить листья дерева в тот момент, когда оболочка
+/// впервые опустится до ≤ M листьев. Это ровно то дерево, которое компаратор
+/// отвечает на бюджет M, и его можно сравнить с удержанным ядром
+/// (tools/structure_overlap.py).
+fn weakest_link_dump(nodes: &[Node], model: Cost, dump: Option<(u64, &str)>) -> Frontier {
     let n = nodes.len();
     // Стоимость листа считается один раз на узел: точная ветка −log₂KT делает
     // до 64 log2 на узел, а α пересчитывается на каждом предке при каждом
@@ -332,6 +385,7 @@ fn weakest_link(nodes: &[Node], model: Cost) -> Frontier {
     }
 
     let mut points = vec![(leaves[0], R[0])];
+    let mut dumped = false;
     let mut alpha = vec![f64::NAN; n];
     // min-куча по α; при равных α — меньший индекс первым (как heapq
     // Python-эталона: кортеж (α, индекс)). Reverse по индексу обязателен:
@@ -406,6 +460,18 @@ fn weakest_link(nodes: &[Node], model: Cost) -> Frontier {
             v = par[v] as usize;
         }
         points.push((leaves[0], R[0]));
+        if let Some((m, path)) = dump {
+            if !dumped && (leaves[0] as u64) <= m {
+                dumped = true;
+                match dump_leaves(nodes, &leaves, &ch0, &ch1, path) {
+                    Ok(k) => eprintln!(
+                        "оптимальное дерево при ≤{} листьях выгружено: {} листьев, {:.3} бит → {}",
+                        m, k, R[0], path
+                    ),
+                    Err(e) => eprintln!("не пишется {}: {}", path, e),
+                }
+            }
+        }
         if leaves[0] == 1 {
             break;
         }
@@ -511,7 +577,7 @@ fn main() {
     if args.len() < 2 {
         eprintln!("использование: comparator <файл> [--depth D] [--limit N]");
         eprintln!("  [--budgets \"M1,M2,...\"] [--points N] [--cost entropy|kt]");
-        eprintln!("  [--hist] [--structure ФАЙЛ]");
+        eprintln!("  [--hist] [--structure ФАЙЛ] [--dump-optimal ФАЙЛ --dump-at M]");
         process::exit(2);
     }
     let mut depth = 24usize;
@@ -521,6 +587,8 @@ fn main() {
     let mut model = Cost::Entropy;
     let mut hist = false;
     let mut structure: Option<String> = None;
+    let mut dump_optimal_path: Option<String> = None;
+    let mut dump_optimal_m: Option<u64> = None;
 
     let mut i = 2;
     while i < args.len() {
@@ -545,6 +613,11 @@ fn main() {
             "--points" => { npoints = need(i).parse().expect("--points"); i += 2; }
             "--hist" => { hist = true; i += 1; }
             "--structure" => { structure = Some(need(i)); i += 2; }
+            // Выгрузить оптимальное дерево при ≤M листьях. Два отдельных
+            // флага, а не "M:файл": git-bash под Windows превращает аргумент
+            // с двоеточием в список путей и молча его коверкает.
+            "--dump-optimal" => { dump_optimal_path = Some(need(i)); i += 2; }
+            "--dump-at" => { dump_optimal_m = Some(need(i).parse().expect("--dump-at M")); i += 2; }
             "--cost" => {
                 model = match need(i).as_str() {
                     "entropy" => Cost::Entropy,
@@ -591,6 +664,11 @@ fn main() {
     }
 
     let nodes = build_tree(data, depth);
+    let dump_opt = match (&dump_optimal_path, dump_optimal_m) {
+        (Some(p), Some(m)) => Some((m, p.as_str())),
+        (Some(_), None) => { eprintln!("--dump-optimal требует --dump-at M"); process::exit(2); }
+        _ => None,
+    };
 
     // Гистограмма частот контекстов по глубинам — эмпирическая опора пункта
     // (2c) постановки («охарактеризовать классы последовательностей...
@@ -626,7 +704,7 @@ fn main() {
         println!();
     }
 
-    let fr = weakest_link(&nodes, model);
+    let fr = weakest_link_dump(&nodes, model, dump_opt);
 
     // bpc здесь и везде ниже — bits per character, бит/БАЙТ (как в ядре
     // ctw.rs и во всех заметках проекта); бит/бит = bpc / 8, отдельная
