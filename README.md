@@ -34,16 +34,16 @@
 - **5. Эмпирика на 100 МБ** (enwik8) = пункт (4). ✅ кривая утечки —
   [notes/stage5-results.md](notes/stage5-results.md)
 - **5б. Компаратор** min_{S∈T_M} L_S(x) — сожаление относительно лучшего M-листового
-  дерева. ⚠️ **исправлен; D=24 готов, D=48 упёрся в память**: класс сравнения был
-  занижен (компаратор обрывал дерево на первом унарном узле вместо T_M из постановки) —
-  разбор в [notes/stage5b-comparator-audit.md](notes/stage5b-comparator-audit.md).
-  Исправлены оба бэкенда — explicit ([src/comparator.rs](src/comparator.rs)) и SA
-  (`tools/sa_prod*.py`, через Patricia-сжатие). **D=24 на полном enwik8 пересчитан**,
-  и впервые посчитано настоящее R_T = L_ядро − min_S L_S —
-  [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md).
-  **D=48 на полном корпусе больше не выполним** на этом стенде: честное дерево ~197M
-  узлов ≈ 30 ГБ (прежние 4.4M узлов были следствием ошибки); нужен либо префикс, либо
-  порт build+frontier на Rust — варианты в той же заметке
+  дерева. ✅ **пересчитан после исправления класса**: компаратор обрывал дерево на
+  первом унарном узле вместо T_M из постановки — разбор в
+  [notes/stage5b-comparator-audit.md](notes/stage5b-comparator-audit.md). Исправлены
+  оба бэкенда, explicit ([src/comparator.rs](src/comparator.rs)) и SA (через
+  Patricia-сжатие) + Rust-порт build+frontier
+  ([tools/sa_frontier.rs](tools/sa_frontier.rs)), без которого честное дерево D=48
+  (124.7M узлов) в память не влезало. Полный enwik8 посчитан в обоих режимах, и
+  впервые посчитано настоящее R_T = L_ядро − min_S L_S, в том числе на рабочей
+  глубине ядра D=48 —
+  [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md)
 - **6. Теория (2)/(3)** — параллельный трек, маршруты уточнены (см. ниже).
 - **7. Препринт и подача.**
 
