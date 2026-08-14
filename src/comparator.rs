@@ -502,6 +502,16 @@ fn weakest_link_dump(nodes: &[Node], model: Cost, dump: Option<(u64, &str)>) -> 
 /// и весь остаток сожаления — цена онлайн-обучения, то есть классический член
 /// CTW, а не штраф вытеснения.
 ///
+/// Формат входа общий для обоих дампов: первый пробельный токен — контекст
+/// цепочкой битов (или «-» для корня), остальное игнорируется. Так `ctw
+/// --dump-tree` (все узлы) и `comparator --dump-optimal` (листья со
+/// счётчиками) читаются одинаково, и второй можно скормить сюда обратно —
+/// круговая проверка, обязанная воспроизвести стоимость с хребта.
+///
+/// Помечаются ВСЕ узлы пути, а не только конец: дерево задаётся
+/// префикс-замкнутым множеством, дамп ядра уже замкнут (пометка ничего не
+/// меняет), а дамп листьев замыкается именно здесь.
+///
 /// Возвращает (листьев, стоимость в битах, прочитано контекстов, не найдено).
 fn eval_structure(nodes: &[Node], path: &str, model: Cost) -> (u64, f64, usize, usize) {
     let txt = match fs::read_to_string(path) {
@@ -512,14 +522,17 @@ fn eval_structure(nodes: &[Node], path: &str, model: Cost) -> (u64, f64, usize, 
     mark[0] = true; // корень есть всегда
     let (mut total, mut miss) = (0usize, 0usize);
     for line in txt.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
+        let tok = match line.split_whitespace().next() {
+            Some(t) => t,
+            None => continue,
+        };
         total += 1;
+        if tok == "-" {
+            continue; // корень
+        }
         let mut cur = 0usize;
         let mut ok = true;
-        for ch in line.bytes() {
+        for ch in tok.bytes() {
             let b = (ch.wrapping_sub(b'0')) as usize;
             if b > 1 {
                 ok = false;
@@ -527,12 +540,13 @@ fn eval_structure(nodes: &[Node], path: &str, model: Cost) -> (u64, f64, usize, 
             }
             let c = nodes[cur].child[b];
             if c == 0 {
-                ok = false; // ядро видело контекст, а компаратор — нет
+                ok = false; // контекст есть у ядра, а у компаратора нет
                 break;
             }
             cur = c as usize;
+            mark[cur] = true; // префикс-замыкание
         }
-        if ok { mark[cur] = true } else { miss += 1 }
+        if !ok { miss += 1 } // пометка уже проставлена по ходу спуска
     }
 
     // Обход от корня. Узел — лист структуры, если ни один его ребёнок не

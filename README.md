@@ -113,7 +113,16 @@ python tools/budget_tests.py   # инварианты бюджета и выте
 python tools/leak_curve.py data/enwik8   # кривая утечки на 100 МБ
 python tools/comparator_check.py          # компаратор vs DP эталон, обе модели
 python tools/comparator_rust_check.py     # Rust ≡ Python, обе модели
+python tools/sa_frontier_check.py         # Rust SA ≡ Python SA ≡ explicit
 bin/comparator.exe --kt-selftest | python tools/comparator_lgamma_check.py
+```
+
+Круговая проверка выгрузки структур (обязана дать нулевой зазор — дерево
+сравнивается само с собой):
+
+```bash
+bin/comparator.exe data/enwik8 --depth 24 --cost kt --limit 3000 \
+    --dump-optimal /tmp/rt.txt --dump-at 72 --structure /tmp/rt.txt
 ```
 
 Компаратор считает две модели стоимости листа (design-spec §5, флаг `--cost`):
