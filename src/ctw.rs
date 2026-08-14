@@ -268,6 +268,8 @@ struct Stats {
     /// Символы, где спуск оборвался из-за бюджета / из-за ленивого создания.
     trunc_budget: u64,
     trunc_lazy: u64,
+    /// Символы, где спуск оборван детерминированным узлом (--defer-det).
+    trunc_det: u64,
     peak_nodes: usize,
     /// Гистограмма времён жизни узла в лог₂-бакетах: life[k] — сколько узлов
     /// прожили от 2^(k−1) до 2^k бит. Только при --stats.
@@ -293,6 +295,10 @@ struct Ctw {
     lazy_k: u64,
     gamma: u32,
     beta_reset: bool,
+    /// Не расщеплять узел, пока его распределение детерминировано, если он
+    /// при этом набрал не меньше `det_k` посещений. 0 — блокировать всегда.
+    defer_det: bool,
+    det_k: u64,
     verify_sum: bool,
     /// Приоритет последнего вытесненного узла — c_min для политики Space-Saving.
     last_evicted_prio: u32,
@@ -330,6 +336,8 @@ impl Ctw {
             lazy_k: 0,
             gamma: 2,
             beta_reset: false,
+            defer_det: false,
+            det_k: 0,
             verify_sum: false,
             last_evicted_prio: 0,
             rng: 0x2545F4914F6CDD1D,
@@ -344,6 +352,7 @@ impl Ctw {
                 evicted_mass: 0,
                 trunc_budget: 0,
                 trunc_lazy: 0,
+                trunc_det: 0,
                 peak_nodes: 1,
                 life: [0; 41],
                 life_sum: 0,
@@ -586,10 +595,22 @@ impl Ctw {
             let b = ((self.hist >> d) & 1) as usize;
             let mut c = self.nodes[cur as usize].child[b];
             if c == 0 {
-                let visits = self.nodes[cur as usize].n[0] as u64
-                    + self.nodes[cur as usize].n[1] as u64;
+                let (a0, a1) = (self.nodes[cur as usize].n[0], self.nodes[cur as usize].n[1]);
+                let visits = a0 as u64 + a1 as u64;
                 if visits < self.lazy_k {
                     self.stats.trunc_lazy += 1;
+                    break;
+                }
+                // Узел с детерминированным распределением расщеплять нечем:
+                // счётчики ребёнка — подмножество счётчиков родителя, значит
+                // ребёнок детерминирован в ту же сторону и с МЕНЬШЕЙ массой,
+                // то есть предсказывает не лучше. Компаратор такой узел не
+                // расщепляет тождественно (выигрыш энтропии c(u)−c(u0)−c(u1)
+                // равен нулю при n0=0 или n1=0), а ядро до сих пор тратило на
+                // это ёмкость: замер stage10 §6.3 показал, что 39% арены
+                // уходит в узлы глубже листьев оптимума.
+                if self.defer_det && (a0 == 0 || a1 == 0) && visits >= self.det_k {
+                    self.stats.trunc_det += 1;
                     break;
                 }
                 match self.alloc(cur, b) {
@@ -776,7 +797,7 @@ fn main() {
         eprintln!("использование: ctw <файл> [--depth D] [--limit N] [--budget УЗЛОВ]");
         eprintln!("  [--victim lfu|ss|random] [--birth cold|spacesaving|parent]");
         eprintln!("  [--sample S] [--lazy K] [--gamma G] [--beta-reset] [--seed S]");
-        eprintln!("  [--check] [--verify-sum] [--stats] [--dump-tree ФАЙЛ]");
+        eprintln!("  [--check] [--verify-sum] [--stats] [--dump-tree ФАЙЛ] [--defer-det K]");
         process::exit(2);
     }
     let mut depth = 24usize;
@@ -788,6 +809,8 @@ fn main() {
     let mut lazy = 0u64;
     let mut gamma = 2u32;
     let mut beta_reset = false;
+    let mut defer_det = false;
+    let mut det_k: u64 = 0;
     let mut seed = 0x2545F4914F6CDD1Du64;
     let mut check = false;
     let mut verify_sum = false;
@@ -830,6 +853,7 @@ fn main() {
                 i += 2;
             }
             "--beta-reset" => { beta_reset = true; i += 1; }
+            "--defer-det" => { defer_det = true; det_k = need(i).parse().expect("--defer-det K"); i += 2; }
             "--check" => { check = true; i += 1; }
             "--verify-sum" => { verify_sum = true; i += 1; }
             "--stats" => { stats_full = true; i += 1; }
@@ -855,6 +879,8 @@ fn main() {
     ctw.lazy_k = lazy;
     ctw.gamma = gamma;
     ctw.beta_reset = beta_reset;
+    ctw.defer_det = defer_det;
+    ctw.det_k = det_k;
     ctw.verify_sum = verify_sum;
     ctw.rng = seed | 1; // xorshift не переносит нулевое состояние
     if stats_full {
@@ -903,6 +929,7 @@ fn main() {
     println!("масса вытесн.   {}", ctw.stats.evicted_mass);
     println!("обрыв бюджет    {} ({:.2}% бит)", ctw.stats.trunc_budget, pct(ctw.stats.trunc_budget));
     println!("обрыв ленивый   {} ({:.2}% бит)", ctw.stats.trunc_lazy, pct(ctw.stats.trunc_lazy));
+    println!("обрыв детерм.   {} ({:.2}% бит)", ctw.stats.trunc_det, pct(ctw.stats.trunc_det));
     println!("кодовая длина   {} бит", fmt_q24(bits, 6));
     println!("bpc             {}", bits_per_char(bits, data.len() as u64));
 
