@@ -61,6 +61,10 @@
   несуществующие теоремы, список литературы содержал сфабрикованные записи.
 - **8. Формализация в Lean** — параллельный трек, план в
   [stage8-lean-plan.md](notes/stage8-lean-plan.md).
+- **9. Инструментовка и ципфовость** — пять счётчиков design-spec §6 доведены
+  до полного состава (`--stats`), частоты контекстов измерены (`--hist` +
+  [tools/zipf_fit.py](tools/zipf_fit.py)). ✅
+  [notes/stage9-instrumentation.md](notes/stage9-instrumentation.md)
 
 Что отделяет подачу от 100% премии, по пунктам постановки и с порядком работ —
 [notes/gap-to-100.md](notes/gap-to-100.md).

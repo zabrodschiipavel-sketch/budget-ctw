@@ -438,6 +438,7 @@ fn main() {
     let mut budgets: Vec<u64> = Vec::new();
     let mut npoints = 0usize;
     let mut model = Cost::Entropy;
+    let mut hist = false;
 
     let mut i = 2;
     while i < args.len() {
@@ -460,6 +461,7 @@ fn main() {
                 i += 2;
             }
             "--points" => { npoints = need(i).parse().expect("--points"); i += 2; }
+            "--hist" => { hist = true; i += 1; }
             "--cost" => {
                 model = match need(i).as_str() {
                     "entropy" => Cost::Entropy,
@@ -506,6 +508,41 @@ fn main() {
     }
 
     let nodes = build_tree(data, depth);
+
+    // Гистограмма частот контекстов по глубинам — эмпирическая опора пункта
+    // (2c) постановки («охарактеризовать классы последовательностей...
+    // ципфовость распределения контекстов»). Печатается машиночитаемо:
+    // `hist <глубина> <лог₂-бакет> <число контекстов>`; фит показателя —
+    // tools/zipf_fit.py. Частота контекста = n₀+n₁ узла, то есть число его
+    // вхождений в поток; неслучившиеся контексты узлов не имеют и в
+    // ранг-частотную кривую не входят, как и должно быть.
+    if hist {
+        let mut per_depth: Vec<[u64; 41]> = vec![[0u64; 41]; depth + 1];
+        let mut stack: Vec<(u32, usize)> = vec![(0, 0)];
+        while let Some((u, d)) = stack.pop() {
+            let nd = &nodes[u as usize];
+            let cnt = nd.n[0] as u64 + nd.n[1] as u64;
+            if cnt > 0 {
+                let k = (63 - cnt.leading_zeros()) as usize; // ⌊log₂cnt⌋
+                per_depth[d][k.min(40)] += 1;
+            }
+            for &c in &nd.child {
+                if c != 0 {
+                    stack.push((c, d + 1));
+                }
+            }
+        }
+        println!("# hist <глубина> <лог2-бакет k> <контекстов с частотой в [2^k, 2^(k+1))>");
+        for (d, row) in per_depth.iter().enumerate() {
+            for (k, &c) in row.iter().enumerate() {
+                if c != 0 {
+                    println!("hist {} {} {}", d, k, c);
+                }
+            }
+        }
+        println!();
+    }
+
     let fr = weakest_link(&nodes, model);
 
     // bpc здесь и везде ниже — bits per character, бит/БАЙТ (как в ядре

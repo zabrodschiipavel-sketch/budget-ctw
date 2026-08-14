@@ -206,7 +206,7 @@ const NONE: u32 = u32::MAX;
 // Узел и дерево
 // ---------------------------------------------------------------------------
 
-/// 32 байта, два узла на строку кэша. Индексы вместо указателей (design-spec §3).
+/// 40 байт. Индексы вместо указателей (design-spec §3).
 /// `parent` нужен, чтобы отцепить вытесняемый лист; номер слота выводится
 /// сравнением, отдельного поля не требует. `leaf_pos` — позиция в массиве
 /// листьев, даёт удаление за O(1).
@@ -220,26 +220,61 @@ struct Node {
     /// Присутствует при любой политике, чтобы размер узла не зависел от неё и
     /// сравнение политик шло при равном числе узлов и равной памяти.
     prio: u32,
+    /// Биты 0/1: из этого слота ребёнок уже вытеснялся. Нужен, чтобы отличать
+    /// ПОВТОРНОЕ создание узла от первого (design-spec §6). Лежит в
+    /// существующем паддинге перед logbeta — размер узла не растёт.
+    evicted_slots: u8,
     logbeta: i64,
 }
+
+/// Размер узла входит в отчётность по памяти и в сравнение политик, поэтому
+/// зафиксирован проверкой на этапе компиляции.
+const _: () = assert!(std::mem::size_of::<Node>() == 40);
 
 impl Node {
     /// Свежий узел: log β = 0, поскольку у пустого узла P_e = 1 и у обоих
     /// (отсутствующих) детей P_w = 1, то есть β = 1.
     fn fresh(parent: u32, n0: u32, n1: u32, prio: u32) -> Node {
-        Node { n: [n0, n1], child: [0, 0], parent, leaf_pos: NONE, prio, logbeta: 0 }
+        Node {
+            n: [n0, n1],
+            child: [0, 0],
+            parent,
+            leaf_pos: NONE,
+            prio,
+            evicted_slots: 0,
+            logbeta: 0,
+        }
     }
 }
 
+/// Пять величин, через которые теория пункта (2) разговаривает с экспериментом
+/// (design-spec §6): вытеснения, ПОВТОРНЫЕ создания отдельно от первых,
+/// распределение времён жизни узла, доля символов с усечённым контекстом,
+/// занятость арены во времени.
 struct Stats {
     evictions: u64,
     creations: u64,
+    /// Создания в слот, из которого ребёнок уже вытеснялся, — цикл
+    /// «создан → вытеснен → создан». Именно он платит параметрическую цену
+    /// заново и стоит в оценке E_T; при холодном рождении цена ≈ ½log₂n.
+    ///
+    /// Точность: недоучёт, если сам родитель успел быть вытеснен и создан
+    /// заново (его флаги обнулились вместе с ним). Верхняя оценка недоучёта —
+    /// число повторных созданий внутренних узлов, а они вытесняются последними
+    /// (вытесняются только листья).
+    recreations: u64,
     /// Масса счётчиков, ушедшая вместе с вытесненными узлами.
     evicted_mass: u64,
     /// Символы, где спуск оборвался из-за бюджета / из-за ленивого создания.
     trunc_budget: u64,
     trunc_lazy: u64,
     peak_nodes: usize,
+    /// Гистограмма времён жизни узла в лог₂-бакетах: life[k] — сколько узлов
+    /// прожили от 2^(k−1) до 2^k бит. Только при --stats.
+    life: [u64; 41],
+    life_sum: u64,
+    /// Срезы занятости: (бит, узлов, листьев, вытеснений к этому моменту).
+    occupancy: Vec<(u64, u32, u32, u64)>,
 }
 
 struct Ctw {
@@ -262,6 +297,17 @@ struct Ctw {
     /// Приоритет последнего вытесненного узла — c_min для политики Space-Saving.
     last_evicted_prio: u32,
     rng: u64,
+    /// Номер обработанного бита — время для замеров жизни и занятости.
+    t: u64,
+    /// --stats: снимать времена жизни и занятость. Ценой памяти (см. birth_t),
+    /// поэтому по умолчанию выключено.
+    stats_full: bool,
+    /// Момент рождения узла, параллельно арене. Заводится только при --stats:
+    /// иначе это +4 байта на узел, то есть +10% памяти, а бюджет памяти —
+    /// независимая переменная всего эксперимента.
+    birth_t: Vec<u32>,
+    /// Шаг между срезами занятости в битах; 0 — не снимать.
+    occ_every: u64,
     stats: Stats,
     tab: Tables,
 }
@@ -287,13 +333,21 @@ impl Ctw {
             verify_sum: false,
             last_evicted_prio: 0,
             rng: 0x2545F4914F6CDD1D,
+            t: 0,
+            stats_full: false,
+            birth_t: Vec::new(),
+            occ_every: 0,
             stats: Stats {
                 evictions: 0,
                 creations: 0,
+                recreations: 0,
                 evicted_mass: 0,
                 trunc_budget: 0,
                 trunc_lazy: 0,
                 peak_nodes: 1,
+                life: [0; 41],
+                life_sum: 0,
+                occupancy: Vec::new(),
             },
             tab: Tables::new(),
         }
@@ -371,13 +425,15 @@ impl Ctw {
         let mass = self.nodes[v as usize].n[0] as u64 + self.nodes[v as usize].n[1] as u64;
         self.last_evicted_prio = self.nodes[v as usize].prio;
 
-        // отцепить от родителя
+        // отцепить от родителя, пометив слот как побывавший вытесненным
         let p = self.nodes[v as usize].parent;
         let pn = &mut self.nodes[p as usize];
         if pn.child[0] == v {
             pn.child[0] = 0;
+            pn.evicted_slots |= 1;
         } else {
             pn.child[1] = 0;
+            pn.evicted_slots |= 2;
         }
         if self.beta_reset {
             pn.logbeta = 0;
@@ -390,6 +446,13 @@ impl Ctw {
 
         self.stats.evictions += 1;
         self.stats.evicted_mass += mass;
+        if self.stats_full {
+            let life = self.t - self.birth_t[v as usize] as u64;
+            // бакет k = ⌈log₂ life⌉ + 1, нулевой — для life = 0
+            let k = (64 - life.leading_zeros()) as usize;
+            self.stats.life[k.min(40)] += 1;
+            self.stats.life_sum += life;
+        }
         Some((v, mass))
     }
 
@@ -428,11 +491,23 @@ impl Ctw {
             }
         };
 
+        // Повторное создание — до перезаписи узла: флаг живёт в РОДИТЕЛЕ и
+        // говорит, что из этого слота уже вытесняли.
+        if self.nodes[parent as usize].evicted_slots & (1 << slot) != 0 {
+            self.stats.recreations += 1;
+        }
+
         self.nodes[idx as usize] = Node::fresh(parent, n0, n1, prio);
         self.leaf_remove(parent); // родитель перестал быть листом
         self.leaf_add(idx);
         self.nodes[parent as usize].child[slot] = idx;
         self.stats.creations += 1;
+        if self.stats_full {
+            if self.birth_t.len() <= idx as usize {
+                self.birth_t.resize(idx as usize + 1, 0);
+            }
+            self.birth_t[idx as usize] = self.t as u32;
+        }
         if self.nodes.len() > self.stats.peak_nodes {
             self.stats.peak_nodes = self.nodes.len();
         }
@@ -548,6 +623,32 @@ impl Ctw {
             self.nodes[i as usize].prio += 1;
         }
         self.hist = (self.hist << 1) | x as u64;
+
+        self.t += 1;
+        if self.occ_every != 0 && self.t % self.occ_every == 0 {
+            self.stats.occupancy.push((
+                self.t,
+                self.nodes.len() as u32,
+                self.leaves.len() as u32,
+                self.stats.evictions,
+            ));
+        }
+    }
+
+    /// Включить дорогие замеры (design-spec §6): времена жизни узлов и срезы
+    /// занятости арены. `total_bits` нужен, чтобы срезов было ~200 независимо
+    /// от размера корпуса.
+    fn enable_stats(&mut self, total_bits: u64) {
+        // Момент рождения хранится в u32 ради памяти: 100 МБ постановки — это
+        // 8·10⁸ бит, влезает. За 536 МБ счётчик переполнился бы и времена
+        // жизни стали бы молча неверными — лучше отказать, чем соврать.
+        if total_bits > u32::MAX as u64 {
+            eprintln!("--stats: корпус > 536 МБ, времена жизни отключены (u32 переполнится)");
+        } else {
+            self.stats_full = true;
+            self.birth_t = vec![0u32; self.nodes.len().max(1)];
+        }
+        self.occ_every = (total_bits / 200).max(1);
     }
 
     /// Проверка инвариантов структуры — вызывается тестами, не горячим путём.
@@ -636,7 +737,7 @@ fn main() {
         eprintln!("использование: ctw <файл> [--depth D] [--limit N] [--budget УЗЛОВ]");
         eprintln!("  [--victim lfu|ss|random] [--birth cold|spacesaving|parent]");
         eprintln!("  [--sample S] [--lazy K] [--gamma G] [--beta-reset] [--seed S]");
-        eprintln!("  [--check] [--verify-sum]");
+        eprintln!("  [--check] [--verify-sum] [--stats]");
         process::exit(2);
     }
     let mut depth = 24usize;
@@ -651,6 +752,7 @@ fn main() {
     let mut seed = 0x2545F4914F6CDD1Du64;
     let mut check = false;
     let mut verify_sum = false;
+    let mut stats_full = false;
 
     let mut i = 2;
     while i < args.len() {
@@ -690,6 +792,7 @@ fn main() {
             "--beta-reset" => { beta_reset = true; i += 1; }
             "--check" => { check = true; i += 1; }
             "--verify-sum" => { verify_sum = true; i += 1; }
+            "--stats" => { stats_full = true; i += 1; }
             other => { eprintln!("неизвестный аргумент: {}", other); process::exit(2); }
         }
     }
@@ -713,6 +816,9 @@ fn main() {
     ctw.beta_reset = beta_reset;
     ctw.verify_sum = verify_sum;
     ctw.rng = seed | 1; // xorshift не переносит нулевое состояние
+    if stats_full {
+        ctw.enable_stats(data.len() as u64 * 8);
+    }
 
     let mut path: Vec<u32> = Vec::with_capacity(depth + 1);
     for &byte in data {
@@ -736,11 +842,46 @@ fn main() {
     println!("бюджет          {}", if budget == usize::MAX { "нет".to_string() } else { budget.to_string() });
     println!("узлов           {}", ctw.nodes.len());
     println!("память          {} байт", ctw.nodes.len() * std::mem::size_of::<Node>());
+    println!("пик узлов       {}", ctw.stats.peak_nodes);
+    let nbits = (data.len() as u64 * 8).max(1);
+    let pct = |a: u64| 100.0_f64 * a as f64 / nbits as f64;
     println!("создано         {}", ctw.stats.creations);
-    println!("вытеснено       {}", ctw.stats.evictions);
+    println!("  повторно      {} ({:.1}% созданий, {:.3} на бит)",
+             ctw.stats.recreations,
+             100.0 * ctw.stats.recreations as f64 / ctw.stats.creations.max(1) as f64,
+             ctw.stats.recreations as f64 / nbits as f64);
+    println!("вытеснено       {} ({:.3} на бит)",
+             ctw.stats.evictions, ctw.stats.evictions as f64 / nbits as f64);
     println!("масса вытесн.   {}", ctw.stats.evicted_mass);
-    println!("обрыв бюджет    {}", ctw.stats.trunc_budget);
-    println!("обрыв ленивый   {}", ctw.stats.trunc_lazy);
+    println!("обрыв бюджет    {} ({:.2}% бит)", ctw.stats.trunc_budget, pct(ctw.stats.trunc_budget));
+    println!("обрыв ленивый   {} ({:.2}% бит)", ctw.stats.trunc_lazy, pct(ctw.stats.trunc_lazy));
     println!("кодовая длина   {} бит", fmt_q24(bits, 6));
     println!("bpc             {}", bits_per_char(bits, data.len() as u64));
+
+    if stats_full {
+        let ev = ctw.stats.evictions.max(1);
+        println!();
+        println!("время жизни узла (бит): среднее {:.1}", ctw.stats.life_sum as f64 / ev as f64);
+        // Медиана и хвост берутся по кумулятиве лог₂-бакетов: точность —
+        // множитель 2, чего для формы распределения достаточно.
+        let mut acc = 0u64;
+        let (mut med, mut p90) = (0usize, 0usize);
+        for (k, &c) in ctw.stats.life.iter().enumerate() {
+            acc += c;
+            if med == 0 && acc * 2 >= ev { med = k; }
+            if p90 == 0 && acc * 10 >= ev * 9 { p90 = k; }
+        }
+        println!("  медиана < 2^{} бит, 90-й процентиль < 2^{} бит", med, p90);
+        println!("  бакет  доля вытеснений");
+        for (k, &c) in ctw.stats.life.iter().enumerate() {
+            if c != 0 {
+                println!("  <2^{:<3} {:>7.3}%  {}", k, 100.0 * c as f64 / ev as f64, c);
+            }
+        }
+        println!();
+        println!("занятость арены (бит, узлов, листьев, вытеснений):");
+        for &(t, n, l, e) in ctw.stats.occupancy.iter() {
+            println!("  {:>12} {:>10} {:>10} {:>12}", t, n, l, e);
+        }
+    }
 }
