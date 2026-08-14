@@ -28,7 +28,7 @@ sys.path.insert(0, "tools")
 from comparator_ref import build_tree, ExactDP, cost_leaf
 
 
-def weakest_link_frontier(nodes):
+def weakest_link_frontier(nodes, cost: str = "entropy"):
     n = len(nodes)
     ch0 = [nd["ch"][0] for nd in nodes]
     ch1 = [nd["ch"][1] for nd in nodes]
@@ -40,6 +40,10 @@ def weakest_link_frontier(nodes):
     R = [0.0] * n
     leaves = [0] * n
     alive = [True] * n
+    # Стоимость узла как листа считается один раз: для cost="kt" это три
+    # lgamma на узел, а α пересчитывается на каждом предке при каждом
+    # отщипывании.
+    leafc = [cost_leaf(nodes, u, cost) for u in range(n)]
 
     def rval(c):
         return R[c] if c else 0.0
@@ -59,22 +63,52 @@ def weakest_link_frontier(nodes):
             if ch1[w]:
                 stack.append(ch1[w])
 
-    # T_max: узел внутренний, если есть хотя бы один реальный ребёнок —
-    # второй слот при отсутствии берётся как виртуальный лист (0.0, 1).
+    # Стартовое дерево = оптимум при λ=0 (штрафа за лист нет).
+    #
+    # Для entropy это в точности T_max: вогнутость энтропии даёт
+    # R(дети) ≤ c(u) всегда, условие ниже никогда не срабатывает, и поведение
+    # бит-в-бит прежнее (в т.ч. на унарных цепочках, где R(дети) == c(u) и
+    # расщепление сохраняется как кандидат с α=0).
+    #
+    # Для kt расщепление ПЛАТНОЕ (каждый новый лист несёт свою ½log₂n
+    # избыточности), поэтому R(дети) может быть > c(u), и такие узлы обязаны
+    # схлопнуться ДО развёртки. Иначе ломается сама теорема Бреймана: её
+    # доказательство нестингa опирается на α ≥ 0, а при отрицательных α
+    # жадное отщипывание перестаёт давать лагранжев оптимум — измерено:
+    # 170 точек хребта из 4308 оказывались хуже точного DP при своём же
+    # числе листьев. После предредукции c(u) ≥ R(u) во всех узлах, и все
+    # последующие α ≥ 0 (отщипывание только удорожает).
     for u in range(n - 1, -1, -1):
         if ch0[u] or ch1[u]:
-            R[u] = rval(ch0[u]) + rval(ch1[u])
-            leaves[u] = lval(ch0[u]) + lval(ch1[u])
-        else:
-            R[u] = cost_leaf(nodes, u)
-            leaves[u] = 1
+            rs = rval(ch0[u]) + rval(ch1[u])
+            if rs <= leafc[u]:
+                R[u] = rs
+                leaves[u] = lval(ch0[u]) + lval(ch1[u])
+                continue
+        R[u] = leafc[u]
+        leaves[u] = 1
+    # Узлы под схлопнувшимися больше не в дереве. Обход сверху за O(n) —
+    # дешевле, чем kill_subtree на каждом схлопывании (там O(n²) на цепочке).
+    if any(leaves[u] == 1 and (ch0[u] or ch1[u]) for u in range(n)):
+        for u in range(n):
+            alive[u] = False
+        stack = [0]
+        while stack:
+            w = stack.pop()
+            alive[w] = True
+            if leaves[w] == 1:
+                continue
+            if ch0[w]:
+                stack.append(ch0[w])
+            if ch1[w]:
+                stack.append(ch1[w])
     pts = [(leaves[0], R[0])]
 
     alpha = {}
 
     def push(u):
         if alive[u] and (ch0[u] or ch1[u]) and leaves[u] > 1:
-            a = (cost_leaf(nodes, u) - R[u]) / (leaves[u] - 1)
+            a = (leafc[u] - R[u]) / (leaves[u] - 1)
             alpha[u] = a
             heapq.heappush(h, (a, u))
 
@@ -90,7 +124,7 @@ def weakest_link_frontier(nodes):
         # отщипываем u: узел становится листом; всё его (реальное) поддерево
         # выбывает из кандидатов (вклад потомков уже учтён в листе u)
         kill_subtree(u)
-        R[u] = cost_leaf(nodes, u)
+        R[u] = leafc[u]
         leaves[u] = 1
         # пересчёт предков: от родителя u вверх до корня включительно.
         # Сам u не пересчитываем — он только что стал листом (для корня
@@ -101,7 +135,7 @@ def weakest_link_frontier(nodes):
             leaves[v] = lval(ch0[v]) + lval(ch1[v])
             if leaves[v] == 1:
                 break
-            alpha[v] = (cost_leaf(nodes, v) - R[v]) / (leaves[v] - 1)
+            alpha[v] = (leafc[v] - R[v]) / (leaves[v] - 1)
             heapq.heappush(h, (alpha[v], v))
             if v == 0:
                 break
@@ -125,11 +159,20 @@ CASES = [
 
 def self_check():
     fail = 0
+    for cost in ("entropy", "kt"):
+        print(f"--- модель стоимости: {cost} ---")
+        fail += _check_model(cost)
+    print("ПРОВАЛЕНО" if fail else "все проверки пройдены (обе модели)")
+    return fail
+
+
+def _check_model(cost):
+    fail = 0
     for data, depth in CASES:
         nodes = build_tree(data, depth)
         max_m = min(24, len(nodes))
-        dp = ExactDP(nodes, max_m).frontier(max_m)
-        pts = weakest_link_frontier(nodes)
+        dp = ExactDP(nodes, max_m, cost).frontier(max_m)
+        pts = weakest_link_frontier(nodes, cost)
         ok = True
         worst_gap = 0.0
         worst_m = None
@@ -156,7 +199,6 @@ def self_check():
         )
         if not ok:
             fail += 1
-    print("ПРОВАЛЕНО" if fail else "все проверки пройдены")
     return fail
 
 

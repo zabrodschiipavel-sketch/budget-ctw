@@ -69,7 +69,13 @@ def log(msg: str, start: float) -> None:
     print(f"[{time.perf_counter() - start:7.1f}s] {msg}", flush=True)
 
 
-def cost_leaf(n0: int, n1: int) -> float:
+def cost_leaf(n0: int, n1: int, cost: str = "entropy") -> float:
+    """Стоимость узла как листа. entropy — n·H (основной компаратор),
+    kt — −log₂KT(n0,n1) (вторичный, design-spec §5). Реализация KT общая с
+    comparator_ref, чтобы SA и explicit считали одно и то же."""
+    if cost == "kt":
+        from comparator_ref import kt_cost
+        return kt_cost(n0, n1)
     n = n0 + n1
     if n <= 0:
         return 0.0
@@ -294,7 +300,8 @@ def build_tree_from_file(path: Path, depth: int, start: float) -> tuple[TreeArra
     return tr, N, pref_path
 
 
-def weakest_link_arrays(tr: TreeArrays, heap_cap: int = 8_000_000) -> list[tuple[int, float]]:
+def weakest_link_arrays(tr: TreeArrays, heap_cap: int = 8_000_000,
+                        cost: str = "entropy") -> list[tuple[int, float]]:
     """leaves(u) = k(u) + база(u): k(u) — СВОЁ сжатое ребро узла u (число
     унарных уровней, поглощённых build() над этим узлом), база — 1 для
     листа, leaves(ch0)+leaves(ch1) для ветвления (k детей уже учтён в их
@@ -316,6 +323,7 @@ def weakest_link_arrays(tr: TreeArrays, heap_cap: int = 8_000_000) -> list[tuple
             par[c1] = u
     R = [0.0] * n
     leaves = [0] * n
+    leafc = [cost_leaf(tr.n0[u], tr.n1[u], cost) for u in range(n)]
 
     def kill(u: int) -> None:
         st = [u]
@@ -327,13 +335,40 @@ def weakest_link_arrays(tr: TreeArrays, heap_cap: int = 8_000_000) -> list[tuple
             if ch1[w]:
                 st.append(ch1[w])
 
+    # Стартовое дерево — оптимум при λ=0. Для entropy это T_max (вогнутость
+    # энтропии), для kt расщепление платное и узлы с R(дети) > c(u) обязаны
+    # схлопнуться до развёртки, иначе α < 0 ломает нестинг Бреймана
+    # (подробности — src/comparator.rs и tools/comparator_wl.py).
+    collapsed = False
     for u in range(n - 1, -1, -1):
         if ch0[u] and ch1[u]:
-            R[u] = R[ch0[u]] + R[ch1[u]]
-            leaves[u] = k[u] + leaves[ch0[u]] + leaves[ch1[u]]
+            rs = R[ch0[u]] + R[ch1[u]]
+            if rs <= leafc[u]:
+                R[u] = rs
+                leaves[u] = k[u] + leaves[ch0[u]] + leaves[ch1[u]]
+                continue
+            R[u] = leafc[u]
+            leaves[u] = 1          # схлопнули в верх сжатого ребра, без k
+            collapsed = True
         else:
-            R[u] = cost_leaf(tr.n0[u], tr.n1[u])
+            R[u] = leafc[u]
             leaves[u] = k[u] + 1
+    if collapsed:
+        # всё под схлопнувшимися узлами выбывает из дерева
+        reach = [False] * n
+        st = [0]
+        while st:
+            w = st.pop()
+            reach[w] = True
+            if leaves[w] <= 1:
+                continue
+            if ch0[w]:
+                st.append(ch0[w])
+            if ch1[w]:
+                st.append(ch1[w])
+        for u in range(n):
+            if not reach[u]:
+                leaves[u] = 0
 
     pts = [(leaves[0], R[0])]
     alpha = [math.nan] * n
@@ -343,7 +378,7 @@ def weakest_link_arrays(tr: TreeArrays, heap_cap: int = 8_000_000) -> list[tuple
         # Кандидат — любой узел с leaves>1: ветвление ИЛИ лист со сжатым
         # ребром k>0 (гарантированно α=0, см. docstring функции).
         if leaves[u] > 1:
-            a = (cost_leaf(tr.n0[u], tr.n1[u]) - R[u]) / (leaves[u] - 1)
+            a = (leafc[u] - R[u]) / (leaves[u] - 1)
             alpha[u] = a
             heapq.heappush(heap, (a, tr.first_occ[u], tr.dep[u], u))
 
@@ -365,7 +400,7 @@ def weakest_link_arrays(tr: TreeArrays, heap_cap: int = 8_000_000) -> list[tuple
                 st.append(ch0[w])
             if ch1[w]:
                 st.append(ch1[w])
-        R[u] = cost_leaf(tr.n0[u], tr.n1[u])
+        R[u] = leafc[u]
         leaves[u] = 1
         v = par[u]
         while v != u:
@@ -373,7 +408,7 @@ def weakest_link_arrays(tr: TreeArrays, heap_cap: int = 8_000_000) -> list[tuple
             leaves[v] = k[v] + leaves[ch0[v]] + leaves[ch1[v]]
             if leaves[v] == 1:
                 break
-            alpha[v] = (cost_leaf(tr.n0[v], tr.n1[v]) - R[v]) / (leaves[v] - 1)
+            alpha[v] = (leafc[v] - R[v]) / (leaves[v] - 1)
             heapq.heappush(heap, (alpha[v], tr.first_occ[v], tr.dep[v], v))
             if v == 0:
                 break

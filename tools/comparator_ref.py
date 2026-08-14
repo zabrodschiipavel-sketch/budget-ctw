@@ -89,9 +89,70 @@ def _entropy(p: float) -> float:
     return -p * math.log2(p) - (1 - p) * math.log2(1 - p)
 
 
-def cost_leaf(nodes, u: int) -> float:
-    """c(u) = n_u · H(эмпирическое распределение следующего бита)."""
+_LN2 = math.log(2.0)
+_LNPI = math.log(math.pi)
+
+# Две модели стоимости листа (design-spec §5).
+#   "entropy" — ОСНОВНОЙ компаратор: n·H(эмпирическое распределение).
+#               Идеализация: параметр листа известен точно и бесплатно.
+#   "kt"      — ВТОРИЧНЫЙ компаратор: −log₂ KT(n0,n1), настоящая кодовая
+#               длина последовательного KT-кода. Это то, что постановка П4
+#               называет L_S ("накопленная кодовая длина, −log₂ вероятностей"),
+#               и то, чем платит ядро; отличается от энтропийного на
+#               избыточность KT ≈ ½·log₂ n + O(1) на лист.
+COST_MODELS = ("entropy", "kt")
+
+
+def kt_cost_skew(m: float) -> float:
+    """−log₂KT(m, 0) = log₂(√π·Γ(m+1)/Γ(m+½)), бит.
+
+    Отдельная ветка, потому что прямая формула через lgamma вычитает два почти
+    равных огромных числа: при m=4·10⁸ каждое lgamma ≈1.4·10¹⁰, ответ ≈15 бит,
+    теряется ~10 порядков (замерено 6.8·10⁻⁷ бита ошибки). Листья с
+    детерминированным продолжением — самый массовый тип в дереве enwik8.
+    """
+    if m <= 0:
+        return 0.0
+    if m < 128:
+        return math.fsum(math.log2((k + 1.0) / (k + 0.5)) for k in range(int(m)))
+    inv = 1.0 / m
+    ratio = 1.0 + inv * (0.125 + inv * (1.0 / 128.0
+                                        + inv * (-5.0 / 1024.0 + inv * (-21.0 / 32768.0))))
+    return 0.5 * math.log2(math.pi) + 0.5 * math.log2(m) + math.log2(ratio)
+
+
+def kt_cost(n0: int, n1: int) -> float:
+    """−log₂ KT(n0, n1), бит.
+
+    KT(a,b) = ∏_{i<a}(i+½)·∏_{j<b}(j+½) / (a+b)!
+            = Γ(a+½)·Γ(b+½) / (π·Γ(a+b+1)),  т.к. Γ(½)=√π.
+
+    Через lgamma — иначе O(n) на лист (у корня n≈8·10⁸). KT обменяем, поэтому
+    при малом min(n0,n1) считаем точно: кодируем сначала mx одинаковых
+    символов (kt_cost_skew), потом mn остальных. Идентично Rust-версии в
+    src/comparator.rs — сверка tools/comparator_lgamma_check.py.
+
+    Проверки в comparator_check.py держат две границы: −log₂KT ≥ n·H (KT —
+    смесь, не лучше ML) и −log₂KT ≤ n·H + ½log₂n + 1 (лемма 1 Виллемса).
+    """
+    n = n0 + n1
+    if n == 0:
+        return 0.0
+    mx, mn = (n0, n1) if n0 >= n1 else (n1, n0)
+    if mn <= 64:
+        c = kt_cost_skew(mx)
+        for j in range(int(mn)):
+            c += math.log2((mx + j + 1.0) / (j + 0.5))
+        return c
+    return (math.lgamma(n + 1.0) + _LNPI
+            - math.lgamma(n0 + 0.5) - math.lgamma(n1 + 0.5)) / _LN2
+
+
+def cost_leaf(nodes, u: int, cost: str = "entropy") -> float:
+    """Стоимость узла u как листа, бит. Модель — см. COST_MODELS."""
     n0, n1 = nodes[u]["n"]
+    if cost == "kt":
+        return kt_cost(n0, n1)
     n = n0 + n1
     if n == 0:
         return 0.0
@@ -99,11 +160,19 @@ def cost_leaf(nodes, u: int) -> float:
 
 
 class ExactDP:
-    """Точный DP: dp[u][m] = мин. стоимость поддерева u с ≤ m листьями."""
+    """Точный DP: dp[u][m] = мин. стоимость поддерева u с ≤ m листьями.
 
-    def __init__(self, nodes, max_m):
+    Работает для обеих моделей стоимости. Для "kt" стоимость листа НЕ
+    супераддитивна (расщепление узла с одинаково распределёнными детьми
+    добавляет ~½log₂n избыточности), поэтому полное дерево там не обязано
+    быть оптимальным — но dp[·][m] по построению минимум по всем деревьям
+    с ≤ m листьями и остаётся невозрастающим по m.
+    """
+
+    def __init__(self, nodes, max_m, cost: str = "entropy"):
         self.nodes = nodes
         self.max_m = max_m
+        self.cost = cost
         self.memo = {}
 
     def solve(self, u, m):
@@ -112,7 +181,7 @@ class ExactDP:
         key = (u, m)
         if key in self.memo:
             return self.memo[key]
-        best = cost_leaf(self.nodes, u)          # u — лист, 1 лист
+        best = cost_leaf(self.nodes, u, self.cost)   # u — лист, 1 лист
         c0, c1 = self.nodes[u]["ch"]
         if (c0 or c1) and m >= 2:
             # отсутствующий брат — виртуальный лист: занимает ровно 1 лист
@@ -131,7 +200,7 @@ class ExactDP:
         return [self.solve(0, m) for m in range(1, max_m + 1)]
 
 
-def full_tree_cost(nodes):
+def full_tree_cost(nodes, cost: str = "entropy"):
     """Стоимость честного полного дерева T_max: Σ c(истинных листьев).
 
     Истинный лист — узел совсем без детей. Узел с одним встреченным ребёнком
@@ -141,11 +210,11 @@ def full_tree_cost(nodes):
     завышение ровно в длину цепочки: n одинаково на всём унарном участке,
     т.к. каждый бит инкрементирует счётчики всех узлов пути.)
     """
-    return sum(cost_leaf(nodes, u) for u, nd in enumerate(nodes)
+    return sum(cost_leaf(nodes, u, cost) for u, nd in enumerate(nodes)
                if not nd["ch"][0] and not nd["ch"][1])
 
 
-def bfos(nodes, lam: float):
+def bfos(nodes, lam: float, cost: str = "entropy"):
     """Лагранжева развёртка при штрафе λ за лист.
 
     Возвращает (стоимость_без_штрафа, число_листьев) оптимального дерева.
@@ -158,7 +227,7 @@ def bfos(nodes, lam: float):
     F = [0.0] * n
     leaves = [0] * n
     for u in range(n - 1, -1, -1):
-        as_leaf = cost_leaf(nodes, u) + lam
+        as_leaf = cost_leaf(nodes, u, cost) + lam
         c0, c1 = nodes[u]["ch"]
         if c0 or c1:
             f0, l0 = (F[c0], leaves[c0]) if c0 else (lam, 1)

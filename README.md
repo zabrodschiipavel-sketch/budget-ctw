@@ -43,9 +43,27 @@
   (124.7M узлов) в память не влезало. Полный enwik8 посчитан в обоих режимах, и
   впервые посчитано настоящее R_T = L_ядро − min_S L_S, в том числе на рабочей
   глубине ядра D=48 —
-  [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md)
-- **6. Теория (2)/(3)** — параллельный трек, маршруты уточнены (см. ниже).
-- **7. Препринт и подача.**
+  [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md).
+  **2026-08-14:** добавлен вторичный компаратор `--cost kt` (−log₂KT на лист —
+  та кодовая длина, которая стоит в определении L_S постановки). Полный enwik8
+  пересчитан на обеих глубинах: при D=24 сожаление без бюджета упало с +0.0403
+  до +0.0100 bpc и стало читаться как структурная цена Γ(S); при D=48 таблица
+  R_T сдвинулась на +0.0005…+0.053 bpc, а безбюджетный пол поднялся с 1.4647
+  до 1.7778 bpc (честный код не выбирает дерево с 546M листьев на 800M бит).
+- **6. Теория (2)/(3)** — ⚠️ **черновики отозваны 2026-08-14**
+  ([stage6-theory.md](notes/stage6-theory.md),
+  [stage6-final-summary.md](notes/stage6-final-summary.md)): под именем теоремы
+  там стоял пересказ измерения, а числа взяты из таблиц сломанного класса
+  сравнения. Пункты (2) и (3) не доказаны — работа начинается заново.
+- **7. Препринт и подача** — ⚠️ **черновик отозван**
+  ([stage7-preprint.tex](notes/stage7-preprint.tex),
+  [stage7-preprint.md](notes/stage7-preprint.md)): абстракт заявлял
+  несуществующие теоремы, список литературы содержал сфабрикованные записи.
+- **8. Формализация в Lean** — параллельный трек, план в
+  [stage8-lean-plan.md](notes/stage8-lean-plan.md).
+
+Что отделяет подачу от 100% премии, по пунктам постановки и с порядком работ —
+[notes/gap-to-100.md](notes/gap-to-100.md).
 
 ## Итог этапа 1: развилка пройдена
 
@@ -89,8 +107,15 @@ rustc -O --edition 2021 -o bin/comparator.exe src/comparator.rs
 python tools/validate.py       # 21 сверка с точным эталоном на дробях
 python tools/budget_tests.py   # инварианты бюджета и вытеснения
 python tools/leak_curve.py data/enwik8   # кривая утечки на 100 МБ
-python tools/comparator_check.py          # компаратор vs DP эталон
+python tools/comparator_check.py          # компаратор vs DP эталон, обе модели
+python tools/comparator_rust_check.py     # Rust ≡ Python, обе модели
+bin/comparator.exe --kt-selftest | python tools/comparator_lgamma_check.py
 ```
+
+Компаратор считает две модели стоимости листа (design-spec §5, флаг `--cost`):
+`entropy` — Σn·H (идеализированный параметр листа) и `kt` — Σ−log₂KT(n0,n1),
+то есть настоящая кодовая длина из определения L_S в постановке. Числа и
+разбор различий — [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md).
 
 Эталон считает кодовую длину по определению, точной дробью, и покрывает как
 равноглубокое дерево, так и усечённое (ленивый порог) — вторая часть проверяет

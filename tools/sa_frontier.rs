@@ -96,6 +96,81 @@ fn npy_open(path: &str) -> (File, u64, u64) {
 // Дерево
 // ---------------------------------------------------------------------------
 
+/// Модель стоимости листа (design-spec §5), выбор — `--cost`.
+/// Реализация KT — копия src/comparator.rs (сверяется
+/// tools/comparator_lgamma_check.py и tools/sa_frontier_check.py).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cost {
+    Entropy,
+    Kt,
+}
+
+/// ln Γ(x) для x > 0 — приближение Ланцоша (g=7, 9 коэффициентов).
+fn ln_gamma(x: f64) -> f64 {
+    const G: [f64; 9] = [
+        0.999_999_999_999_809_93,
+        676.520_368_121_885_1,
+        -1259.139_216_722_402_8,
+        771.323_428_777_653_13,
+        -176.615_029_162_140_59,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_12,
+        9.984_369_578_019_571_6e-6,
+        1.505_632_735_149_311_6e-7,
+    ];
+    if x < 0.5 {
+        let pi = std::f64::consts::PI;
+        return (pi / (pi * x).sin()).ln() - ln_gamma(1.0 - x);
+    }
+    let z = x - 1.0;
+    let mut a = G[0];
+    for (i, &c) in G.iter().enumerate().skip(1) {
+        a += c / (z + i as f64);
+    }
+    let t = z + 7.5;
+    0.5 * (2.0 * std::f64::consts::PI).ln() + (z + 0.5) * t.ln() - t + a.ln()
+}
+
+/// −log₂KT(m, 0): прямая формула через lnΓ здесь вычитает два почти равных
+/// огромных числа (при m=4·10⁸ каждое ≈1.4·10¹⁰, ответ ≈15 бит), поэтому
+/// точная сумма при m < 128 и асимптотика Γ(m+1)/Γ(m+½) = √m(1 + 1/(8m) +
+/// 1/(128m²) − 5/(1024m³) − 21/(32768m⁴)) дальше.
+fn kt_cost_skew(m: f64) -> f64 {
+    if m <= 0.0 { return 0.0; }
+    if m < 128.0 {
+        let mut s = 0.0;
+        let mut k = 0.0;
+        while k < m {
+            s += ((k + 1.0) / (k + 0.5)).log2();
+            k += 1.0;
+        }
+        return s;
+    }
+    let inv = 1.0 / m;
+    let ratio = 1.0
+        + inv * (0.125 + inv * (1.0 / 128.0 + inv * (-5.0 / 1024.0 + inv * (-21.0 / 32768.0))));
+    0.5 * std::f64::consts::PI.log2() + 0.5 * m.log2() + ratio.log2()
+}
+
+/// −log₂KT(n0,n1) = log₂[π·Γ(n+1)/(Γ(n0+½)Γ(n1+½))]. KT обменяем, поэтому при
+/// малом min(n0,n1) считаем точно: mx одинаковых символов, потом mn остальных.
+fn kt_cost(n0: f64, n1: f64) -> f64 {
+    let n = n0 + n1;
+    if n <= 0.0 { return 0.0; }
+    let (mx, mn) = if n0 >= n1 { (n0, n1) } else { (n1, n0) };
+    if mn <= 64.0 {
+        let mut c = kt_cost_skew(mx);
+        let mut j = 0.0;
+        while j < mn {
+            c += ((mx + j + 1.0) / (j + 0.5)).log2();
+            j += 1.0;
+        }
+        return c;
+    }
+    (ln_gamma(n + 1.0) + std::f64::consts::PI.ln() - ln_gamma(n0 + 0.5) - ln_gamma(n1 + 0.5))
+        / std::f64::consts::LN_2
+}
+
 struct Tree {
     n0: Vec<u32>,
     n1: Vec<u32>,
@@ -149,6 +224,18 @@ impl Tree {
         let p = a / n;
         if p <= 0.0 || p >= 1.0 { return 0.0; }
         n * (-p * p.log2() - (1.0 - p) * (1.0 - p).log2())
+    }
+
+    /// c(u) = −log₂KT(n0,n1), биты — вторичный компаратор (design-spec §5).
+    fn cost_leaf_kt(&self, u: usize) -> f64 {
+        kt_cost(self.n0[u] as f64, self.n1[u] as f64)
+    }
+
+    fn cost_leaf_model(&self, u: usize, model: Cost) -> f64 {
+        match model {
+            Cost::Entropy => self.cost_leaf(u),
+            Cost::Kt => self.cost_leaf_kt(u),
+        }
     }
 
     /// Длина сжатого ребра НАД узлом: k(u) = dep(u) − dep(par(u)) − 1;
@@ -461,6 +548,7 @@ fn main() {
     if args.len() < 2 {
         eprintln!("использование: sa_frontier <chunk1.npy> [chunk2.npy ...] [--depth D]");
         eprintln!("  [--budgets \"M1,M2,...\"] [--points N] [--nodes-hint N]");
+        eprintln!("  [--cost entropy|kt]");
         eprintln!("несколько файлов сливаются k-way на лету (каждый должен быть");
         eprintln!("отсортирован по key) — merge_all в Python не нужен");
         process::exit(2);
@@ -469,6 +557,7 @@ fn main() {
     let mut budgets: Vec<u64> = Vec::new();
     let mut npoints = 0usize;
     let mut nodes_hint: Option<usize> = None;
+    let mut model = Cost::Entropy;
     // позиционные аргументы до первого флага — входные .npy
     let mut inputs: Vec<String> = Vec::new();
     let mut i = 1;
@@ -489,6 +578,14 @@ fn main() {
             "--depth" => { depth = need(i).parse().expect("--depth"); i += 2; }
             "--points" => { npoints = need(i).parse().expect("--points"); i += 2; }
             "--nodes-hint" => { nodes_hint = Some(need(i).parse().expect("--nodes-hint")); i += 2; }
+            "--cost" => {
+                model = match need(i).as_str() {
+                    "entropy" => Cost::Entropy,
+                    "kt" => Cost::Kt,
+                    o => { eprintln!("--cost: entropy|kt, дано {}", o); process::exit(2); }
+                };
+                i += 2;
+            }
             "--budgets" => {
                 budgets = need(i).split(',').filter(|s| !s.is_empty())
                     .map(|s| s.parse().expect("--budgets")).collect();
@@ -529,30 +626,87 @@ fn main() {
     let mut leaves = vec![0u64; n];
     let k: Vec<u8> = (0..n).map(|u| tr.k(u) as u8).collect();
     let root = root_idx as usize;
+
+    // Кеш стоимости листа. Для entropy не заводится: это +8 Б/узел (≈1 ГБ на
+    // полном D=48), а cost_leaf там — два log2. Для kt кеш обязателен: точная
+    // ветка −log₂KT делает до 64 log2 на узел, а α пересчитывается на каждом
+    // предке каждого отщипывания (тот же довод, что и для кеша самого α).
+    let lc: Option<Vec<f64>> = match model {
+        Cost::Entropy => None,
+        Cost::Kt => Some((0..n).map(|u| tr.cost_leaf_kt(u)).collect()),
+    };
+    macro_rules! lcost {
+        ($u:expr) => { match &lc { Some(v) => v[$u], None => tr.cost_leaf($u) } };
+    }
+
+    // T_max для отчётности копится в том же обходе от корня: плоский цикл по
+    // 0..n считал бы и узлы, до которых из корня не дойти, а прежняя версия
+    // (leaves[root] после пост-обхода) их не учитывала.
+    let mut tmax_cost = 0.0f64;
+    let mut tmax_leaves = 0u64;
+
+    // Стартовое дерево = оптимум при λ=0. Для entropy условие rs <= c(u)
+    // выполняется всегда (вогнутость), и это ровно T_max — прежнее поведение
+    // бит-в-бит. Для kt расщепление платное, узлы с rs > c(u) обязаны
+    // схлопнуться ДО развёртки: иначе α < 0 и жадное отщипывание перестаёт
+    // давать лагранжев оптимум (см. src/comparator.rs, там это измерено).
+    let mut collapsed_any = false;
     {
         let mut st: Vec<(u32, u8)> = Vec::with_capacity(3 * (depth + 2));
         st.push((root_idx, 0));
         while let Some((u, phase)) = st.pop() {
             let ui = u as usize;
             if tr.ch0[ui] == NONE {
-                r[ui] = tr.cost_leaf(ui);
+                r[ui] = lcost!(ui);
                 leaves[ui] = k[ui] as u64 + 1;
+                tmax_cost += r[ui];
+                tmax_leaves += leaves[ui];
             } else if phase == 0 {
+                tmax_leaves += k[ui] as u64;
                 st.push((u, 1));
                 st.push((tr.ch0[ui], 0));
                 st.push((tr.ch1[ui], 0));
             } else {
                 let (a, b) = (tr.ch0[ui] as usize, tr.ch1[ui] as usize);
-                r[ui] = r[a] + r[b];
-                leaves[ui] = k[ui] as u64 + leaves[a] + leaves[b];
+                let rs = r[a] + r[b];
+                let cu = lcost!(ui);
+                if rs <= cu {
+                    r[ui] = rs;
+                    leaves[ui] = k[ui] as u64 + leaves[a] + leaves[b];
+                } else {
+                    // схлопывание в лист: как и при отщипывании, узел
+                    // представляет ВЕРХ сжатого ребра — ровно 1 лист, без k
+                    r[ui] = cu;
+                    leaves[ui] = 1;
+                    collapsed_any = true;
+                }
             }
         }
     }
+    if collapsed_any {
+        // Всё под схлопнувшимися узлами в дерево не входит: помечаем мёртвым
+        // (leaves = 0), иначе такие узлы попадут в кучу кандидатов и при
+        // отщипывании воскресят схлопнутого предка через пересчёт r/leaves.
+        let mut reach = vec![false; n];
+        let mut st: Vec<u32> = vec![root_idx];
+        while let Some(w) = st.pop() {
+            let wi = w as usize;
+            reach[wi] = true;
+            if leaves[wi] <= 1 || tr.ch0[wi] == NONE { continue; }
+            st.push(tr.ch0[wi]);
+            st.push(tr.ch1[wi]);
+        }
+        for u in 0..n {
+            if !reach[u] { leaves[u] = 0; }
+        }
+    }
     debug_assert_eq!(tr.par[root], NONE, "у корня не должно быть родителя");
-    let full_leaves = leaves[root];
-    let full_cost = r[root];
-    eprintln!("[{:6.1}s] T_max: {} листьев, {:.3} бит",
-              t0.elapsed().as_secs_f64(), full_leaves, full_cost);
+    let full_leaves = tmax_leaves;
+    let full_cost = tmax_cost;
+    let start_leaves = leaves[root];
+    let start_cost = r[root];
+    eprintln!("[{:6.1}s] T_max: {} листьев, {:.3} бит; старт (λ=0): {} листьев, {:.3} бит",
+              t0.elapsed().as_secs_f64(), full_leaves, full_cost, start_leaves, start_cost);
 
     // --- отщипывание слабейшего звена ---
     // α кешируется в массиве и пересчитывается ТОЛЬКО когда у узламенялись
@@ -560,15 +714,17 @@ fn main() {
     // дважды, а просеивание кучи делает десятки сравнений на операцию —
     // замерено, что так frontier не доходил и до 1M точек из 14M за 30+ с.
     let mut alpha = vec![f64::INFINITY; n];
-    let recalc = |alpha: &mut Vec<f64>, r: &Vec<f64>, leaves: &Vec<u64>, u: usize| {
-        alpha[u] = if leaves[u] > 1 {
-            (tr.cost_leaf(u) - r[u]) / (leaves[u] - 1) as f64
-        } else {
-            f64::INFINITY
+    macro_rules! recalc {
+        ($u:expr) => {
+            alpha[$u] = if leaves[$u] > 1 {
+                (lcost!($u) - r[$u]) / (leaves[$u] - 1) as f64
+            } else {
+                f64::INFINITY
+            };
         };
-    };
+    }
     for u in 0..n {
-        recalc(&mut alpha, &r, &leaves, u);
+        recalc!(u);
     }
     macro_rules! keyf {
         ($alpha:expr) => {
@@ -624,7 +780,7 @@ fn main() {
             }
             if tr.ch0[wi] != NONE { stack.push(tr.ch0[wi]); stack.push(tr.ch1[wi]); }
         }
-        r[u] = tr.cost_leaf(u);
+        r[u] = lcost!(u);
         leaves[u] = 1;
         alpha[u] = f64::INFINITY;
 
@@ -635,7 +791,7 @@ fn main() {
             let (a, b) = (tr.ch0[vi] as usize, tr.ch1[vi] as usize);
             r[vi] = r[a] + r[b];
             leaves[vi] = k[vi] as u64 + leaves[a] + leaves[b];
-            recalc(&mut alpha, &r, &leaves, vi);
+            recalc!(vi);
             if leaves[vi] <= 1 {
                 { let kf = keyf!(alpha); heap.remove(v, &kf); }
                 break;
@@ -664,11 +820,15 @@ fn main() {
     let nbits = nrec as f64;
     let nbytes = nrec as f64 / 8.0;
     println!();
+    println!("модель стоимости        {}",
+             if model == Cost::Kt { "kt (−log₂KT на лист)" } else { "entropy (n·H на лист)" });
     println!("узлов в сжатом дереве   {}", n);
     println!("точек на оболочке       {}", npts);
     println!("листья (полное дерево)  {}", full_leaves);
     println!("стоимость полного дерева {:.3} бит ({:.6} бит/бит, {:.4} bpc)",
              full_cost, full_cost / nbits, full_cost / nbytes);
+    println!("оптимум без бюджета     {:.3} бит ({:.6} бит/бит, {:.4} bpc) при {} листьях",
+             start_cost, start_cost / nbits, start_cost / nbytes, start_leaves);
     if !budgets.is_empty() {
         println!();
         println!("бюджет M (листья)  стоимость (бит)   бит/бит      bpc");

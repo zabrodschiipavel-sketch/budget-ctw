@@ -26,7 +26,11 @@ from comparator_wl import weakest_link_frontier
 from sa_prod import generate, merge_all, build_tree_from_file, weakest_link_arrays
 
 EXE = Path("bin/sa_frontier.exe")
-BUDGETS = [10, 100, 1000, 10000]
+# Крупные бюджеты добавлены специально: при cost=kt стартовые точки хребта у
+# SA и explicit лежат на плато α=0 (одинаковая стоимость, разное число
+# листьев — см. ниже), и только бюджеты в этой области проверяют, что классы
+# всё-таки совпадают по стоимости.
+BUDGETS = [10, 100, 1000, 10000, 100_000, 1_000_000]
 
 random.seed(20260811)
 CASES = [
@@ -58,6 +62,19 @@ def main() -> int:
         print(f"нет {EXE} — собери: rustc -O --edition 2021 -o {EXE} tools/sa_frontier.rs")
         return 2
     fails = 0
+    for cost in ("entropy", "kt"):
+        print(f"=== модель стоимости: {cost} ===")
+        fails += run(cost)
+    print()
+    if fails:
+        print(f"ПРОВАЛЕНО: {fails}")
+        return 1
+    print(f"все проверки пройдены на обеих моделях ({len(CASES)} кейсов каждая)")
+    return 0
+
+
+def run(cost: str) -> int:
+    fails = 0
     for idx, (data, depth) in enumerate(CASES):
         tmp = Path(f"tools/.sa_fr_{idx}")
         tmp.mkdir(parents=True, exist_ok=True)
@@ -68,7 +85,7 @@ def main() -> int:
 
         # Rust
         out = subprocess.run(
-            [str(EXE), str(merged), "--depth", str(depth),
+            [str(EXE), str(merged), "--depth", str(depth), "--cost", cost,
              "--budgets", ",".join(str(b) for b in BUDGETS)],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
@@ -80,9 +97,11 @@ def main() -> int:
         rust_budgets = {}
         for line in out.stdout.splitlines():
             p = line.split()
-            if line.startswith("листья (полное дерево)"):
-                rust["leaves"] = int(p[-1])
-            elif line.startswith("стоимость полного дерева"):
+            # Сравниваем стартовую точку хребта (оптимум при λ=0), а не T_max:
+            # при kt они различаются (лишние расщепления платные), а Python-
+            # эталоны тоже стартуют с λ=0-оптимума. Для entropy это одно и то же.
+            if line.startswith("оптимум без бюджета"):
+                rust["leaves"] = int(p[-2])
                 rust["cost"] = float(p[3])
             elif len(p) == 4 and p[0].isdigit():
                 rust_budgets[int(p[0])] = float(p[1])
@@ -90,13 +109,28 @@ def main() -> int:
         # Python SA (тот же алгоритм) и explicit
         tr, _N, pref = build_tree_from_file(merged, depth, start)
         created.append(pref)
-        py_pts = weakest_link_arrays(tr)
-        ex_pts = weakest_link_frontier(build_tree(data, depth))
+        py_pts = weakest_link_arrays(tr, cost=cost)
+        ex_pts = weakest_link_frontier(build_tree(data, depth), cost)
 
         ok = True
-        if rust.get("leaves") != py_pts[0][0] or py_pts[0][0] != ex_pts[0][0]:
+        # Rust и Python-SA — одно представление, число листьев обязано совпасть.
+        if rust.get("leaves") != py_pts[0][0]:
             ok = False
-            print(f"  ЛИСТЬЯ: rust={rust.get('leaves')} py={py_pts[0][0]} explicit={ex_pts[0][0]}")
+            print(f"  ЛИСТЬЯ SA: rust={rust.get('leaves')} py={py_pts[0][0]}")
+        # С explicit число листьев стартовой точки сравнивается только при
+        # entropy. При kt стартом служит оптимум при λ=0, а он лежит на плато
+        # α=0: у SA схлопывание уносит всю унарную цепочку сразу (узел — ВЕРХ
+        # сжатого ребра), explicit же режет по уровню и оставляет виртуальных
+        # братьев выше. Стоимость у обоих одна и та же, деревья равноценны;
+        # совпадение классов проверяется стоимостью и ответами на бюджеты
+        # (включая бюджеты внутри плато — см. BUDGETS).
+        if py_pts[0][0] != ex_pts[0][0]:
+            if cost == "entropy":
+                ok = False
+                print(f"  ЛИСТЬЯ vs explicit: py={py_pts[0][0]} explicit={ex_pts[0][0]}")
+            elif abs(py_pts[0][1] - ex_pts[0][1]) > 1e-6:
+                ok = False
+                print(f"  ПЛАТО НЕ ПЛОСКОЕ: py={py_pts[0]} explicit={ex_pts[0]}")
         if abs(rust.get("cost", -1) - py_pts[0][1]) > 1e-3 or abs(py_pts[0][1] - ex_pts[0][1]) > 1e-6:
             ok = False
             print(f"  СТОИМОСТЬ: rust={rust.get('cost')} py={py_pts[0][1]} explicit={ex_pts[0][1]}")
@@ -126,12 +160,7 @@ def main() -> int:
         except OSError:
             pass
 
-    print()
-    if fails:
-        print(f"ПРОВАЛЕНО: {fails} из {len(CASES)}")
-        return 1
-    print(f"все {len(CASES)} проверок пройдены")
-    return 0
+    return fails
 
 
 if __name__ == "__main__":
