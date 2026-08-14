@@ -651,6 +651,45 @@ impl Ctw {
         self.occ_every = (total_bits / 200).max(1);
     }
 
+    /// Выгрузить структуру удержанного дерева: по строке на узел, контекст —
+    /// цепочка битов от самого свежего (порядок спуска: бит глубины d есть
+    /// (hist>>d)&1). Счётчики не выгружаются намеренно: они у ядра сброшены
+    /// вытеснениями, а вопрос, ради которого дамп и делается, — насколько
+    /// хороша САМА структура. Оценивает её `comparator --structure` по
+    /// истинным счётчикам корпуса.
+    fn dump_tree(&self, path: &str) -> std::io::Result<usize> {
+        use std::io::Write;
+        let mut w = std::io::BufWriter::new(fs::File::create(path)?);
+        // Рекурсия по дереву: её глубина ограничена D ≤ 63, стек не при чём.
+        // Корень (пустой контекст) не выгружается — он есть всегда.
+        fn go<W: std::io::Write>(
+            me: &Ctw,
+            u: u32,
+            prefix: &mut String,
+            w: &mut W,
+            n: &mut usize,
+        ) -> std::io::Result<()> {
+            if !prefix.is_empty() {
+                writeln!(w, "{}", prefix)?;
+                *n += 1;
+            }
+            for b in 0..2usize {
+                let c = me.nodes[u as usize].child[b];
+                if c != 0 {
+                    prefix.push(if b == 0 { '0' } else { '1' });
+                    go(me, c, prefix, w, n)?;
+                    prefix.pop();
+                }
+            }
+            Ok(())
+        }
+        let mut n = 0usize;
+        let mut prefix = String::with_capacity(self.depth + 1);
+        go(self, 0, &mut prefix, &mut w, &mut n)?;
+        w.flush()?;
+        Ok(n)
+    }
+
     /// Проверка инвариантов структуры — вызывается тестами, не горячим путём.
     fn check_invariants(&self) -> Result<(), String> {
         if self.nodes.len() > self.cap {
@@ -737,7 +776,7 @@ fn main() {
         eprintln!("использование: ctw <файл> [--depth D] [--limit N] [--budget УЗЛОВ]");
         eprintln!("  [--victim lfu|ss|random] [--birth cold|spacesaving|parent]");
         eprintln!("  [--sample S] [--lazy K] [--gamma G] [--beta-reset] [--seed S]");
-        eprintln!("  [--check] [--verify-sum] [--stats]");
+        eprintln!("  [--check] [--verify-sum] [--stats] [--dump-tree ФАЙЛ]");
         process::exit(2);
     }
     let mut depth = 24usize;
@@ -753,6 +792,7 @@ fn main() {
     let mut check = false;
     let mut verify_sum = false;
     let mut stats_full = false;
+    let mut dump_tree: Option<String> = None;
 
     let mut i = 2;
     while i < args.len() {
@@ -793,6 +833,7 @@ fn main() {
             "--check" => { check = true; i += 1; }
             "--verify-sum" => { verify_sum = true; i += 1; }
             "--stats" => { stats_full = true; i += 1; }
+            "--dump-tree" => { dump_tree = Some(need(i)); i += 2; }
             other => { eprintln!("неизвестный аргумент: {}", other); process::exit(2); }
         }
     }
@@ -833,6 +874,13 @@ fn main() {
         if let Err(e) = ctw.check_invariants() {
             eprintln!("ИНВАРИАНТ НАРУШЕН: {}", e);
             process::exit(3);
+        }
+    }
+
+    if let Some(p) = &dump_tree {
+        match ctw.dump_tree(p) {
+            Ok(n) => eprintln!("структура выгружена: {} узлов → {}", n, p),
+            Err(e) => { eprintln!("не пишется {}: {}", p, e); process::exit(1); }
         }
     }
 

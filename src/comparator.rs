@@ -423,6 +423,86 @@ fn weakest_link(nodes: &[Node], model: Cost) -> Frontier {
 }
 
 // ---------------------------------------------------------------------------
+// Оценка чужой структуры (дамп ядра) по истинным счётчикам корпуса
+// ---------------------------------------------------------------------------
+
+/// Стоимость дерева, СТРУКТУРУ которого задал кто-то другой (`ctw --dump-tree`),
+/// но параметры листьев подогнаны идеально — те же, что у компаратора.
+///
+/// Зачем: сожаление ядра распадается на структурную часть («то ли дерево
+/// удержал бюджет») и параметрическую («успел ли выучить параметры»). Здесь
+/// меряется ровно первая: если структура ядра при идеальных параметрах почти
+/// догоняет оптимум того же размера, значит LFU удерживает правильное дерево
+/// и весь остаток сожаления — цена онлайн-обучения, то есть классический член
+/// CTW, а не штраф вытеснения.
+///
+/// Возвращает (листьев, стоимость в битах, прочитано контекстов, не найдено).
+fn eval_structure(nodes: &[Node], path: &str, model: Cost) -> (u64, f64, usize, usize) {
+    let txt = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("не читается {}: {}", path, e); process::exit(1); }
+    };
+    let mut mark = vec![false; nodes.len()];
+    mark[0] = true; // корень есть всегда
+    let (mut total, mut miss) = (0usize, 0usize);
+    for line in txt.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        total += 1;
+        let mut cur = 0usize;
+        let mut ok = true;
+        for ch in line.bytes() {
+            let b = (ch.wrapping_sub(b'0')) as usize;
+            if b > 1 {
+                ok = false;
+                break;
+            }
+            let c = nodes[cur].child[b];
+            if c == 0 {
+                ok = false; // ядро видело контекст, а компаратор — нет
+                break;
+            }
+            cur = c as usize;
+        }
+        if ok { mark[cur] = true } else { miss += 1 }
+    }
+
+    // Обход от корня. Узел — лист структуры, если ни один его ребёнок не
+    // помечен. Иначе он внутренний, и каждый непомеченный слот даёт лист:
+    // существующий ребёнок — со своей стоимостью (его поддерево отсечено и
+    // представлено им целиком), отсутствующий — виртуальный лист в 0 бит.
+    // Тот же учёт, что в weakest_link.
+    let (mut leaves, mut cost) = (0u64, 0.0f64);
+    let mut stack: Vec<u32> = vec![0];
+    while let Some(u) = stack.pop() {
+        let nd = &nodes[u as usize];
+        let m = [
+            nd.child[0] != 0 && mark[nd.child[0] as usize],
+            nd.child[1] != 0 && mark[nd.child[1] as usize],
+        ];
+        if !m[0] && !m[1] {
+            leaves += 1;
+            cost += cost_leaf(nd, model);
+            continue;
+        }
+        for b in 0..2usize {
+            let c = nd.child[b];
+            if m[b] {
+                stack.push(c);
+            } else {
+                leaves += 1;
+                if c != 0 {
+                    cost += cost_leaf(&nodes[c as usize], model);
+                }
+            }
+        }
+    }
+    (leaves, cost, total, miss)
+}
+
+// ---------------------------------------------------------------------------
 // Драйвер
 // ---------------------------------------------------------------------------
 
@@ -431,6 +511,7 @@ fn main() {
     if args.len() < 2 {
         eprintln!("использование: comparator <файл> [--depth D] [--limit N]");
         eprintln!("  [--budgets \"M1,M2,...\"] [--points N] [--cost entropy|kt]");
+        eprintln!("  [--hist] [--structure ФАЙЛ]");
         process::exit(2);
     }
     let mut depth = 24usize;
@@ -439,6 +520,7 @@ fn main() {
     let mut npoints = 0usize;
     let mut model = Cost::Entropy;
     let mut hist = false;
+    let mut structure: Option<String> = None;
 
     let mut i = 2;
     while i < args.len() {
@@ -462,6 +544,7 @@ fn main() {
             }
             "--points" => { npoints = need(i).parse().expect("--points"); i += 2; }
             "--hist" => { hist = true; i += 1; }
+            "--structure" => { structure = Some(need(i)); i += 2; }
             "--cost" => {
                 model = match need(i).as_str() {
                     "entropy" => Cost::Entropy,
@@ -570,6 +653,25 @@ fn main() {
         for (l, c) in fr.points.iter().take(npoints) {
             println!("  {:>10}  {:>14.3}  {:>8.4}  {:>8.4}", l, c, c / nbits, c / nbytes);
         }
+        println!();
+    }
+
+    if let Some(sp) = &structure {
+        let (sl, sc, total, miss) = eval_structure(&nodes, sp, model);
+        // Оптимум того же размера — с той же оболочки, что и все ответы на
+        // бюджеты, поэтому сравнение честное (одна модель стоимости, один класс).
+        let mut opt = f64::INFINITY;
+        for &(l, c) in &fr.points {
+            if (l as u64) <= sl && c < opt {
+                opt = c;
+            }
+        }
+        println!("структура из {} ({} контекстов, не найдено {})", sp, total, miss);
+        println!("  листьев            {}", sl);
+        println!("  стоимость          {:.3} бит ({:.4} bpc)", sc, sc / nbytes);
+        println!("  оптимум ≤{} листьев {:.3} бит ({:.4} bpc)", sl, opt, opt / nbytes);
+        println!("  структурный зазор  {:.3} бит ({:.4} bpc, {:.2}%)",
+                 sc - opt, (sc - opt) / nbytes, 100.0 * (sc - opt) / opt);
         println!();
     }
 
