@@ -1,3 +1,25 @@
+% =====================================================================
+% ⚠️ ЧЕРНОВИК ОТОЗВАН 2026-08-14 — НЕ ПОДАВАТЬ, НЕ ЦИТИРОВАТЬ.
+%
+% 1. Абстракт заявляет «Upper Bound Theorem (Point 2)» и «Lower Bound
+%    Construction (Point 3)». Теорем нет: §5 и §6 — по одному абзацу
+%    пересказа измерений, доказательства отсутствуют.
+% 2. Все эмпирические числа (+0.0193 b/b при 12%, <0.001 при 70%,
+%    таблица §7) взяты из таблиц СЛОМАННОГО класса сравнения, отменённых
+%    аудитом (см. notes/stage5b-comparator-audit.md и ⚠️-пометки в
+%    notes/stage5b-comparator-results.md). Честные числа другие.
+% 3. Δ компаратора к полному дереву выдана за штраф вытеснения E_T
+%    алгоритма — это разница компаратора с самим собой.
+% 4. Библиография расходится с notes/bibliography.md (Metwally 2005:
+%    здесь SIGMOD + DOI 10.1145/…, в bibliography.md — ICDT/LNCS
+%    10.1007/978-3-540-30570-5_27; Berinde 2009 — расходится название).
+%    Перед новой подачей каждую запись сверить с первоисточником;
+%    в notes/stage7-preprint.md список литературы вообще содержит
+%    сфабрикованные записи.
+%
+% Писать препринт заново от notes/bibliography.md после того, как
+% появятся доказательства (2) и (3). План — notes/gap-to-100.md.
+% =====================================================================
 \documentclass[11pt]{article}
 \usepackage[margin=1in]{geometry}
 \usepackage{hyperref}
@@ -16,6 +38,16 @@
 \begin{document}
 
 \maketitle
+
+\begin{center}
+\fbox{\parbox{0.9\textwidth}{\centering\bfseries
+RETRACTED DRAFT (2026-08-14) --- do not submit, do not cite.\\[2pt]
+\normalfont The claimed upper (§5) and lower (§6) bounds are not proved:
+both sections restate measurements. All empirical figures below come from
+comparator runs with a broken comparison class, superseded on 2026-08-10.
+The quantity called $E_T$ is the comparator's own cost difference, not the
+algorithm's eviction penalty. See \texttt{notes/gap-to-100.md}.}}
+\end{center}
 
 \begin{abstract}
 We present a rigorous theoretical analysis of the budget-constrained Context Tree Weighting (budget-CTW) algorithm, a memory-constrained variant of CTW that operates with a fixed budget of $M$ leaf contexts using a Least Frequently Used (LFU) eviction policy. Our work achieves three core contributions:
