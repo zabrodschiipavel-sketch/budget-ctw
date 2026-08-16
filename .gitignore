@@ -11,3 +11,6 @@ __pycache__/
 tools/_*.bin
 tools/_*.txt
 tools/*.log
+
+# Lean: зависимости и артефакты сборки (Mathlib ~5 ГБ, ставится `lake exe cache get`)
+formal/.lake/
