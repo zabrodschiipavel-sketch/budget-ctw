@@ -16,8 +16,16 @@
     раз; случайных обращений к диску нет. Ожидание: 3-8 мин вместо 20+ ч.
 
 Интерфейс совпадает с build_tree_from_file: (TreeArrays, N, pref_path).
-Семантика (контракция унарного узла, тай-брейк first_occ) — та же, что в
-comparator_sa_ref.py; сверяется с explicit на малых данных.
+
+**Исправлено 2026-08-10** (класс сравнения — см. sa_prod.py и
+notes/stage5b-comparator-audit.md): дерево СЖАТОЕ (Patricia-подобное), узел
+материализуется только на настоящем ветвлении/обрыве, число пропущенных
+унарных уровней — `k`. Оба пути (memmap для больших диапазонов через
+`advance()`, RAM-блок через `rec()`) находят точку сжатия ЗА ОДИН шаг —
+XOR граничных ключей диапазона вместо обхода по уровню (тот же приём, что в
+sa_prod.build_tree_from_file.build — см. вывод там). Тай-брейк first_occ — без
+изменений. Сверяется с comparator_sa_ref.py и explicit на малых данных
+(см. __main__ внизу) и с sa_prod.py на средних (tools/sa_prod_check.py).
 """
 from __future__ import annotations
 
@@ -75,7 +83,7 @@ def build_tree_fast(path: Path, depth: int, start: float) -> tuple[TreeArrays, i
     pref.flush()
     log(f"[fast] префиксные суммы готовы (sum label = {acc})", start)
 
-    tr = TreeArrays([], [], [], [], [], [])
+    tr = TreeArrays([], [], [], [], [], [], [])
     n_blocks = 0
     _node_log = [0]
 
@@ -85,7 +93,13 @@ def build_tree_fast(path: Path, depth: int, start: float) -> tuple[TreeArrays, i
             log(f"[fast] узлов построено: {_node_log[0]}", start)
 
     def emit(lo: int, hi: int, d: int) -> int:
-        """Создать узел; счётчики из pref (memmap, 2 чтения на узел)."""
+        """Создать узел; счётчики из pref (memmap, 2 чтения на узел).
+
+        k=0 — заглушка: узел либо выставлен в очередь BFS (`level`) для
+        обработки в advance() ниже, либо будет сразу передан в rec()
+        (внутри build_ram) — в обоих случаях сжатие определит настоящие
+        глубину/k и перезапишет tr.dep[u]/tr.k[u] до использования.
+        """
         u = len(tr.n0)
         s = int(pref[hi]) - int(pref[lo])
         tr.n0.append(hi - lo - s)
@@ -93,8 +107,21 @@ def build_tree_fast(path: Path, depth: int, start: float) -> tuple[TreeArrays, i
         tr.ch0.append(0)
         tr.ch1.append(0)
         tr.dep.append(d)
+        tr.k.append(0)
         tr.first_occ.append(0)
         return u
+
+    def advance(lo: int, hi: int, d: int) -> tuple[int, int]:
+        """Сжатие ребра через memmap: O(1) переход к глубине первого
+        возможного расхождения (см. sa_prod.build_tree_from_file.build) —
+        два скалярных чтения из memmap + XOR вместо обхода по уровню."""
+        if hi - lo <= 1:
+            return depth, depth - d
+        diff = int(keys[lo]) ^ int(keys[hi - 1])
+        if diff == 0:
+            return depth, depth - d
+        dd = depth - 1 - (diff.bit_length() - 1)
+        return dd, dd - d
 
     def build_ram(blk, d: int, u0: int, lo0: int, hi0: int) -> None:
         """Построить под-дерево узла u0 (диапазон [lo0, hi0) в блочных координатах)
@@ -116,14 +143,35 @@ def build_tree_fast(path: Path, depth: int, start: float) -> tuple[TreeArrays, i
             return (b - a - n1, n1)
 
         def rec(a: int, b: int, dd: int, u: int) -> int:
+            """u уже выделен (либо снаружи как u0, либо парой ниже) с
+            заглушками dep/k — эта функция определяет настоящие dep/k через
+            сжатие (те же 2 чтения+XOR, что advance(), но по RAM-массивам
+            блока) и перезаписывает их вместе со счётчиками.
+            """
             node_progress(start)
             n0c, n1c = counts(a, b)
             tr.n0[u] = n0c
             tr.n1[u] = n1c
-            if dd >= depth or b - a <= 1:
+            if b - a <= 1:
+                k = depth - dd
+                dd = depth
+            else:
+                diff = int(bkeys[a]) ^ int(bkeys[b - 1])
+                if diff == 0:
+                    k = depth - dd
+                    dd = depth
+                else:
+                    ddx = depth - 1 - (diff.bit_length() - 1)
+                    k = ddx - dd
+                    dd = ddx
+            tr.dep[u] = dd
+            tr.k[u] = k
+            if dd >= depth:
                 fo = int(np.min(bposs[a:b])) if a < b else 0
                 tr.first_occ[u] = fo
                 return fo
+            # dd здесь гарантированно точка настоящего ветвления (см. вывод
+            # в comparator_sa_ref.build_sa_tree)
             p0 = int(bkeys[a]) >> (depth - dd)
             T = np.uint64((2 * p0 + 1) << (depth - 1 - dd))
             mid = int(np.searchsorted(bkeys, T, side="left"))  # уже в координатах блока
@@ -131,22 +179,16 @@ def build_tree_fast(path: Path, depth: int, start: float) -> tuple[TreeArrays, i
                 mid = a
             elif mid > b:
                 mid = b
-            has0 = mid > a
-            has1 = mid < b
-            if has0 and has1:
-                c0 = len(tr.n0)
-                for _ in range(2):
-                    tr.n0.append(0); tr.n1.append(0)
-                    tr.ch0.append(0); tr.ch1.append(0)
-                    tr.dep.append(dd + 1); tr.first_occ.append(0)
-                tr.ch0[u] = c0
-                tr.ch1[u] = c0 + 1
-                f0 = rec(a, mid, dd + 1, c0)
-                f1 = rec(mid, b, dd + 1, c0 + 1)
-                fo = min(f0, f1)
-                tr.first_occ[u] = fo
-                return fo
-            fo = int(np.min(bposs[a:b])) if a < b else 0
+            c0 = len(tr.n0)
+            for _ in range(2):
+                tr.n0.append(0); tr.n1.append(0)
+                tr.ch0.append(0); tr.ch1.append(0)
+                tr.dep.append(dd + 1); tr.k.append(0); tr.first_occ.append(0)
+            tr.ch0[u] = c0
+            tr.ch1[u] = c0 + 1
+            f0 = rec(a, mid, dd + 1, c0)
+            f1 = rec(mid, b, dd + 1, c0 + 1)
+            fo = min(f0, f1)
             tr.first_occ[u] = fo
             return fo
 
@@ -161,34 +203,50 @@ def build_tree_fast(path: Path, depth: int, start: float) -> tuple[TreeArrays, i
         for lo, hi, d, u, parent in level:
             if hi - lo <= RAM_BLOCK:
                 blk = np.array(mm[lo:hi])  # ЯВНАЯ копия в RAM (не view на mmap!)
-                build_ram(blk, d, u, 0, hi - lo)  # перезапишет счётчики и создаст детей
+                build_ram(blk, d, u, 0, hi - lo)  # перезапишет счётчики/dep/k и создаст детей
                 n_blocks += 1
                 if n_blocks % 20 == 0:
                     log(f"[fast] блоков обработано: {n_blocks}, узлов: {len(tr.n0)}", start)
-            elif d >= depth or hi - lo <= 1:
-                tr.first_occ[u] = _min_pos(poss, lo, hi)
             else:
-                p0 = int(keys[lo]) >> (depth - d)
-                T = np.uint64((2 * p0 + 1) << (depth - 1 - d))
-                mid = _mem_binsearch(keys, lo, hi, T)
-                has0 = mid > lo
-                has1 = mid < hi
-                if has0 and has1:
-                    c0 = emit(lo, mid, d + 1)   # дети создаются СРАЗУ со счётчиками
-                    c1 = emit(mid, hi, d + 1)
+                # hi-lo не меняется сжатием (см. вывод в comparator_sa_ref),
+                # поэтому решение RAM_BLOCK выше не зависит от порядка.
+                d2, k = advance(lo, hi, d)
+                tr.dep[u] = d2
+                tr.k[u] = k
+                if d2 >= depth:
+                    tr.first_occ[u] = _min_pos(poss, lo, hi)
+                else:
+                    # d2 здесь гарантированно точка настоящего ветвления
+                    p0 = int(keys[lo]) >> (depth - d2)
+                    T = np.uint64((2 * p0 + 1) << (depth - 1 - d2))
+                    mid = _mem_binsearch(keys, lo, hi, T)
+                    c0 = emit(lo, mid, d2 + 1)   # дети создаются СРАЗУ со счётчиками
+                    c1 = emit(mid, hi, d2 + 1)
                     tr.ch0[u] = c0
                     tr.ch1[u] = c1
-                    nxt.append((lo, mid, d + 1, c0, u))
-                    nxt.append((mid, hi, d + 1, c1, u))
-                else:
-                    tr.first_occ[u] = _min_pos(poss, lo, hi)
-        # first_occ внутренних mem-узлов = min по детям (build_ram уже сделал для блоков)
-        for lo, hi, d, u, parent in level:
-            if parent >= 0 and tr.ch0[parent]:
-                tr.first_occ[parent] = min(tr.first_occ[parent], tr.first_occ[u])
+                    nxt.append((lo, mid, d2 + 1, c0, u))
+                    nxt.append((mid, hi, d2 + 1, c1, u))
         log(f"[fast] уровень {lvl}: {len(level)} узлов -> {len(nxt)}", start)
         level = nxt
         lvl += 1
+
+    # first_occ ветвлений memmap-пути = min по детям. Один проход по убыванию
+    # индекса, а не «один уровень BFS за раз, как раньше»: дети ВСЕГДА
+    # созданы позже родителя (и в memmap-BFS, и в rec()), поэтому убывающий
+    # индекс — корректный снизу-вверх обход за один проход. Прежний
+    # одноуровневый fixup был багом: если ребёнок САМ оказывался ветвлением
+    # (его first_occ ещё не разрешён — ждёт СВОЕГО fixup на следующей
+    # итерации), родитель получал placeholder 0 вместо истинного минимума.
+    # build_ram уже проставляет first_occ корректно внутри себя (рекурсия
+    # rec() строго сверху вниз в один вызов), этот проход их не портит: для
+    # уже готовых узлов min(x, x)==x.
+    for u in range(len(tr.n0) - 1, -1, -1):
+        c0, c1 = tr.ch0[u], tr.ch1[u]
+        if c0 or c1:
+            fo = tr.first_occ[c0] if c0 else tr.first_occ[c1]
+            if c1:
+                fo = min(fo, tr.first_occ[c1])
+            tr.first_occ[u] = fo
 
     internal = sum(1 for c in tr.ch0 if c)
     log(f"[fast] дерево: {len(tr)} узлов, {internal} внутренних, блоков {n_blocks}", start)
@@ -199,33 +257,57 @@ def build_tree_fast(path: Path, depth: int, start: float) -> tuple[TreeArrays, i
 
 
 if __name__ == "__main__":
-    # самопроверка против explicit на малых данных
+    # самопроверка против explicit на малых данных, с генерируемыми (не
+    # захардкоженными в отсутствующий файл) корпусами; RAM_BLOCK занижен,
+    # чтобы даже маленькие тесты реально прогоняли ОБА пути (memmap для
+    # диапазонов > RAM_BLOCK, RAM-блок для остальных).
+    import random
+    import time
+
     sys.path.insert(0, "tools")
     from comparator_ref import build_tree
     from comparator_wl import weakest_link_frontier
-    from sa_prod import generate, merge_all
+    from sa_prod import generate, merge_all, weakest_link_arrays
 
-    start = float("nan")
-    import time
+    # ВАЖНО: обычное переприсваивание, не через отдельный import — при запуске
+    # как `python sa_prod_fast.py` этот файл выполняется как __main__, и
+    # `import sa_prod_fast` загрузил бы ВТОРОЙ, независимый экземпляр модуля
+    # (RAM_BLOCK поменялся бы не у того build_tree_fast, что реально вызывается
+    # ниже, — memmap-путь тогда молча не проверялся бы вовсе).
+    RAM_BLOCK = 40  # форсирует переключение memmap<->RAM на малых данных
+
+    random.seed(20260810)
+    CASES = [
+        (b"the quick brown fox jumps over the lazy dog the quick brown fox", 8),
+        (bytes(range(256)) * 4, 12),
+        (b"\x00" * 40 + b"\x01" + b"\x00" * 40 + b"\x02", 32),
+        (b"a" * 60 + b"b" + b"a" * 60 + b"c" + b"a" * 20, 48),
+    ]
+    for _ in range(4):
+        n = random.randint(300, 1500)
+        data = bytes(random.getrandbits(8) for _ in range(n))
+        depth = random.choice([8, 16, 24, 32, 48])
+        CASES.append((data, depth))
+
     start = time.perf_counter()
-
-    data = open("tools/_t2k.bin", "rb").read()
-    for depth in (4, 8, 12):
+    fail = 0
+    for data, depth in CASES:
         tmp = Path("tools/.sa_tmp_fast")
         tmp.mkdir(parents=True, exist_ok=True)
         created = []
         files, _ = generate(data, depth, tmp, created, start)
         final = merge_all(files, tmp, created, start, way=4)
         tr, N, prefp = build_tree_fast(final, depth, start)
-        # frontier
-        from sa_prod import weakest_link_arrays
         pts = weakest_link_arrays(tr)
         e = build_tree(data, depth)
         ref = weakest_link_frontier(e)
-        assert len(pts) == len(ref), (len(pts), len(ref), depth)
-        for (l1, c1), (l2, c2) in zip(pts, ref):
-            assert l1 == l2 and abs(c1 - c2) < 1e-6, (l1, c1, l2, c2, depth)
-        print(f"[fast] depth={depth}: OK, узлов {len(tr)}, точек {len(pts)}")
+        ok = len(pts) == len(ref) and all(
+            l1 == l2 and abs(c1 - c2) < 1e-6 for (l1, c1), (l2, c2) in zip(pts, ref)
+        )
+        status = "OK  " if ok else "FAIL"
+        if not ok:
+            fail += 1
+        print(f"{status} depth={depth:<3} len={len(data):<5} узлов {len(tr):>6} точек {len(pts):>5}")
         import gc
         gc.collect()  # освободить mmap-хендлы до unlink
         for p in created:
@@ -242,4 +324,8 @@ if __name__ == "__main__":
             tmp.rmdir()
         except OSError:
             pass
-    print("FAST BUILD: OK")
+    print()
+    if fail:
+        print(f"ПРОВАЛЕНО: {fail} из {len(CASES)}")
+        sys.exit(1)
+    print(f"[fast] все {len(CASES)} проверок пройдены")

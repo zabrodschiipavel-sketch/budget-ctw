@@ -7,5 +7,10 @@ __pycache__/
 *.npy
 *.npy.pref
 
-# Черновые корпуса проверочных обвязок
+# Черновые корпуса и дампы проверочных обвязок
 tools/_*.bin
+tools/_*.txt
+tools/*.log
+
+# Lean: зависимости и артефакты сборки (Mathlib ~5 ГБ, ставится `lake exe cache get`)
+formal/.lake/

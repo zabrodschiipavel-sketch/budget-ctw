@@ -34,15 +34,61 @@
 - **5. Эмпирика на 100 МБ** (enwik8) = пункт (4). ✅ кривая утечки —
   [notes/stage5-results.md](notes/stage5-results.md)
 - **5б. Компаратор** min_{S∈T_M} L_S(x) — сожаление относительно лучшего M-листового
-  дерева. ⚠️ **отозван, требует переделки**: компаратор минимизирует по строгому
-  подклассу T_M (обрывает дерево на первом унарном узле), поэтому таблицы сожаления в
-  [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md)
-  недействительны — разбор и замеры в
-  [notes/stage5b-comparator-audit.md](notes/stage5b-comparator-audit.md).
-  Код: [src/comparator.rs](src/comparator.rs) + SA-бэкенд
-  (`tools/sa_prod.py` / `tools/sa_prod_fast.py`)
-- **6. Теория (2)/(3)** — параллельный трек, маршруты уточнены (см. ниже).
-- **7. Препринт и подача.**
+  дерева. ✅ **пересчитан после исправления класса**: компаратор обрывал дерево на
+  первом унарном узле вместо T_M из постановки — разбор в
+  [notes/stage5b-comparator-audit.md](notes/stage5b-comparator-audit.md). Исправлены
+  оба бэкенда, explicit ([src/comparator.rs](src/comparator.rs)) и SA (через
+  Patricia-сжатие) + Rust-порт build+frontier
+  ([tools/sa_frontier.rs](tools/sa_frontier.rs)), без которого честное дерево D=48
+  (124.7M узлов) в память не влезало. Полный enwik8 посчитан в обоих режимах, и
+  впервые посчитано настоящее R_T = L_ядро − min_S L_S, в том числе на рабочей
+  глубине ядра D=48 —
+  [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md).
+  **2026-08-14:** добавлен вторичный компаратор `--cost kt` (−log₂KT на лист —
+  та кодовая длина, которая стоит в определении L_S постановки). Полный enwik8
+  пересчитан на обеих глубинах: при D=24 сожаление без бюджета упало с +0.0403
+  до +0.0100 bpc и стало читаться как структурная цена Γ(S); при D=48 таблица
+  R_T сдвинулась на +0.0005…+0.053 bpc, а безбюджетный пол поднялся с 1.4647
+  до 1.7778 bpc (честный код не выбирает дерево с 546M листьев на 800M бит).
+- **6. Теория (2)/(3)** — ⚠️ **черновики отозваны 2026-08-14**
+  ([stage6-theory.md](notes/stage6-theory.md),
+  [stage6-final-summary.md](notes/stage6-final-summary.md)): под именем теоремы
+  там стоял пересказ измерения, а числа взяты из таблиц сломанного класса
+  сравнения. Пункты (2) и (3) не доказаны — работа начинается заново.
+- **7. Препринт и подача** — ⚠️ старый черновик отозван
+  ([stage7-preprint.tex](notes/stage7-preprint.tex),
+  [stage7-preprint.md](notes/stage7-preprint.md)): абстракт заявлял
+  несуществующие теоремы, список литературы содержал сфабрикованные записи.
+  **Написан заново: [notes/preprint.md](notes/preprint.md)** — с честной
+  таблицей статусов по всем четырём пунктам постановки в §0.
+- **8. Формализация в Lean** — план в
+  [stage8-lean-plan.md](notes/stage8-lean-plan.md), **реализация с 2026-08-16**
+  в [formal/](formal/): собирается (`lake build`, Lean 4.33 + Mathlib), **ни
+  одного `sorry`**. Машинно проверены смесевое неравенство CTW под усечением
+  арены, `Σ P(x) = 1` на KT-счётчиках и сожаление ≤ 2M−1 бит при статической
+  арене — пункт (2а) постановки. ✅
+  [notes/stage14-lean.md](notes/stage14-lean.md)
+- **9. Инструментовка и ципфовость** — пять счётчиков design-spec §6 доведены
+  до полного состава (`--stats`), частоты контекстов измерены (`--hist` +
+  [tools/zipf_fit.py](tools/zipf_fit.py)). ✅
+  [notes/stage9-instrumentation.md](notes/stage9-instrumentation.md)
+- **10. Пункт (2)** — формальная модель, три доказанные леммы, точное
+  разложение сожаления и замеры его частей. Сожаление оказалось целиком
+  структурным; теоремы пока нет.
+  [notes/stage10-upper-bound.md](notes/stage10-upper-bound.md)
+- **11. Пункт (3)** — доказана пороговая нижняя граница: при памяти ниже
+  описания оптимального дерева линейный штраф неизбежен; выше — нет, то есть
+  буквальная формулировка постановки неверна.
+  [notes/stage11-lower-bound.md](notes/stage11-lower-bound.md)
+- **12. Матрица политик на 100 МБ** — ранжирование зависит от глубины; попутно
+  опровергнуто, что бюджетный алгоритм не может обогнать полный CTW. ✅
+  [notes/stage12-policy-ablation.md](notes/stage12-policy-ablation.md)
+- **13. Базлайн D2-CTW** (NIPS 2017) — воспроизведён; при 4 и 32 МБ он лучше
+  нашего алгоритма, при 160 МБ хуже. ✅
+  [notes/stage13-d2ctw.md](notes/stage13-d2ctw.md)
+
+Что отделяет подачу от 100% премии, по пунктам постановки и с порядком работ —
+[notes/gap-to-100.md](notes/gap-to-100.md).
 
 ## Итог этапа 1: развилка пройдена
 
@@ -86,8 +132,24 @@ rustc -O --edition 2021 -o bin/comparator.exe src/comparator.rs
 python tools/validate.py       # 21 сверка с точным эталоном на дробях
 python tools/budget_tests.py   # инварианты бюджета и вытеснения
 python tools/leak_curve.py data/enwik8   # кривая утечки на 100 МБ
-python tools/comparator_check.py          # компаратор vs DP эталон
+python tools/comparator_check.py          # компаратор vs DP эталон, обе модели
+python tools/comparator_rust_check.py     # Rust ≡ Python, обе модели
+python tools/sa_frontier_check.py         # Rust SA ≡ Python SA ≡ explicit
+bin/comparator.exe --kt-selftest | python tools/comparator_lgamma_check.py
 ```
+
+Круговая проверка выгрузки структур (обязана дать нулевой зазор — дерево
+сравнивается само с собой):
+
+```bash
+bin/comparator.exe data/enwik8 --depth 24 --cost kt --limit 3000 \
+    --dump-optimal /tmp/rt.txt --dump-at 72 --structure /tmp/rt.txt
+```
+
+Компаратор считает две модели стоимости листа (design-spec §5, флаг `--cost`):
+`entropy` — Σn·H (идеализированный параметр листа) и `kt` — Σ−log₂KT(n0,n1),
+то есть настоящая кодовая длина из определения L_S в постановке. Числа и
+разбор различий — [notes/stage5b-comparator-results.md](notes/stage5b-comparator-results.md).
 
 Эталон считает кодовую длину по определению, точной дробью, и покрывает как
 равноглубокое дерево, так и усечённое (ленивый порог) — вторая часть проверяет
@@ -100,10 +162,18 @@ python tools/comparator_check.py          # компаратор vs DP этал�
 ## Структура
 
 ```
-src/        — ядро предсказателя (Rust, целые числа, без плавающей точки)
-tools/      — точный эталон на Fraction и сверка с ядром
-research/   — промпты и отчёты литературной разведки
-notes/      — дизайн-спека, библиография, результаты по этапам
+src/            — ядро предсказателя (Rust, целые числа, без плавающей точки)
+tools/          — точный эталон на Fraction и сверка с ядром
+formal/         — формализация в Lean 4 + Mathlib (пункт (2) постановки)
+research/       — промпты и отчёты литературной разведки
+notes/          — дизайн-спека, библиография, результаты по этапам
+open-problems/  — постановки того, что осталось нерешённым
+```
+
+Формальная часть проверяется одной командой, независимо от доверия к автору:
+
+```bash
+cd formal && lake exe cache get && lake build
 ```
 
 Исследовательский движок — [research-engine](../research-engine) (DeepSeek/Gemini +

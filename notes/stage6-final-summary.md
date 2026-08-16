@@ -1,5 +1,17 @@
 # Stage 6 Theory: Completed Validation Summary
 
+> ## ⚠️ ДОКУМЕНТ ОТОЗВАН (2026-08-14)
+>
+> Отозван вместе с [stage6-theory.md](stage6-theory.md) — см. причины там.
+> Здесь дополнительно: раздел «Validation» валидирует теоремы, которых нет,
+> числами из таблиц сломанного класса (+0.0193 / +0.0007 / 0.0000), а строка
+> «At small budgets (1,000 nodes): +0.2115 b/b delta» подана как подтверждение
+> нижней границы Ω(T), хотя это разница компаратора с самим собой на одном
+> корпусе — никакого отношения к adversarial-конструкции она не имеет.
+>
+> Чек-листы «[X] Validated upper bound», «[X] Validated lower bound» считать
+> недействительными: ни один пункт не выполнен.
+
 ## Completed Tasks
 - [X] Revised theoretical framework for budget-CTW regret decomposition (stage6-theory.md)
 - [X] Validated upper bound (Point 2) against empirical D=48 data

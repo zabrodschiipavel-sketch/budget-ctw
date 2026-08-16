@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Полный анализ сожаления: читает вывод компаратора, считает regret.
+"""⚠️ НЕ СЧИТАЕТ СОЖАЛЕНИЕ. Не использовать до переписывания.
+
+Скрипт читает ТОЛЬКО вывод компаратора и выдаёт cost(M) − cost(полное дерево),
+то есть разницу компаратора с самим собой. Кодовая длина алгоритма в неё не
+входит вообще, а сожаление из постановки П4 — это R_T = L_алг − min_{S∈T_M} L_S.
+Разбор ошибки — notes/stage5b-comparator-audit.md (пункт 4 раздела «что чинить»).
+
+Правильный расчёт сейчас делается вручную и записан в
+notes/stage5b-comparator-results.md: кодовая длина ядра из stage5-results.md
+минус кодовая длина компаратора при согласованном бюджете (M = узлы/c), и
+обязательно с `--cost kt` — модель стоимости листа меняет пол на 0.03 bpc при
+D=24 и на 0.6 bpc при D=48.
+
+Чтобы переписать, скрипту нужны ДВА входа: таблица bpc ядра и таблица
+компаратора, плюс явный коэффициент c.
 """
 import sys, re
 
@@ -21,20 +35,27 @@ def parse_comparator_output(text: str):
         if m: result['full_tree_nodes'] = int(m.group(1)); continue
         m = re.match(r'листья \(полное дерево\)\s+(\d+)', line)
         if m: result['full_tree_leaves'] = int(m.group(1)); continue
-        m = re.match(r'стоимость полного дерева\s+([\d.]+)\s+бит\s+\(([\d.]+)\s+bpc\)', line)
-        if m: 
+        # "X бит (Y бит/бит, Z bpc)" — comparator.rs печатает обе единицы;
+        # regex ниже разбирает и старый двухзначный, и новый трёхзначный
+        # формат (bpc — последнее число в скобках в обоих случаях).
+        m = re.match(
+            r'стоимость полного дерева\s+([\d.]+)\s+бит\s+\(([\d.]+)(?:\s+бит/бит,\s+([\d.]+))?\s+bpc\)',
+            line,
+        )
+        if m:
             result['full_tree_cost'] = float(m.group(1))
-            result['bpc'] = float(m.group(2))
+            result['bpc'] = float(m.group(3) if m.group(3) is not None else m.group(2))
             continue
-        # точки: M  cost  bpc
+        # строки точек оболочки (--points, 3 или 4 токена: листья, биты,
+        # [бит/бит,] bpc) — bpc всегда последний токен.
         parts = line.split()
-        if len(parts) == 3:
+        if len(parts) in (3, 4):
             try:
                 M = int(parts[0])
                 cost = float(parts[1])
-                bpc = float(parts[2])
+                bpc = float(parts[-1])
                 result['points'].append((M, cost, bpc))
-            except:
+            except ValueError:
                 pass
     return result
 

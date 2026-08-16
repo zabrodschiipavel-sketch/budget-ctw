@@ -1,5 +1,34 @@
 # Stage 6 Theory: Budget-CTW Regret Bounds
 
+> ## ⚠️ ДОКУМЕНТ ОТОЗВАН (2026-08-14)
+>
+> Оставлен только для истории, **ссылаться нельзя**. Причины:
+>
+> 1. **«Theorem 2.1» — не теорема.** Утверждение «при бюджете >70% ёмкости
+>    измеренный E_T падает ниже 0.001 b/b» есть пересказ измерения, а не
+>    доказательство. Пункт (2) П4 требует границы, выведенной из модели
+>    алгоритма; ничего такого здесь нет.
+> 2. **Числа отменены аудитом класса сравнения.** +0.0193 при M=56 000,
+>    +0.0007 при M=857 401, «насыщение при 70% листьев» взяты из таблиц
+>    D=48, помеченных ⚠️ в
+>    [stage5b-comparator-results.md](stage5b-comparator-results.md): они
+>    посчитаны по сломанному классу (обрыв дерева на первом унарном узле).
+>    Честные числа отличаются в разы (1.4647 bpc против 2.8118 на полном
+>    дереве D=48).
+> 3. **Подмена величины.** То, что здесь названо штрафом вытеснения E_T
+>    алгоритма, на деле есть cost(M) − cost(полное) **самого компаратора** —
+>    разница компаратора с собой, в которую кодовая длина алгоритма не входит
+>    вообще. Ровно эту ошибку [аудит](stage5b-comparator-audit.md) уже нашёл в
+>    `tools/analyze_regret.py`.
+> 4. **«Theorem 3.1» привязана к LFU**, тогда как пункт (3) требует нижней
+>    границы для *любого* алгоритма с памятью o(T).
+>
+> Что из документа переживает отзыв: скелет разложения R_T (он и так взят из
+> [design-spec §6](design-spec.md)) и замкнутая форма локального штрафа
+> −log₂P_e(лист-фаза) из этапа 4.
+>
+> Актуальный разбор того, что надо доказать, — [gap-to-100.md](gap-to-100.md).
+
 ## Problem Statement
 We analyze a Context Tree Weighting (CTW) predictor with a strict memory constraint: only $M$ leaf contexts may be active at any time. The predictor uses a Least Frequently Used (LFU) eviction policy that removes the context with the lowest access frequency when the budget is exceeded. Regret $R_T$ is defined as the difference in expected code length between this budget-constrained predictor and the optimal $M$-leaf context tree predictor.
 
