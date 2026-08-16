@@ -10,4 +10,5 @@ import BudgetCTW.Tree
 import BudgetCTW.KT
 import BudgetCTW.Mixture
 import BudgetCTW.Consistency
+import BudgetCTW.Counts
 import BudgetCTW.Statements
